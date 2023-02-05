@@ -162,12 +162,17 @@ impl<'a> Attrs<'a> {
 
     /// Check if font matches
     pub fn matches(&self, face: &fontdb::FaceInfo) -> bool {
-        //TODO: smarter way of including emoji
-        face.post_script_name.contains("Emoji")
-            || (face.style == self.style
-                && face.weight == self.weight
-                && face.stretch == self.stretch
-                && face.monospaced == self.monospaced)
+        match self.family {
+            Family::Name(name) if face.post_script_name == name => true,
+            _ => {
+                // TODO: smarter way of including emoji
+                face.post_script_name.contains("Emoji")
+                    || (face.style == self.style
+                        && face.weight == self.weight
+                        && face.stretch == self.stretch
+                        && face.monospaced == self.monospaced)
+            }
+        }
     }
 
     /// Check if this set of attributes can be shaped with another

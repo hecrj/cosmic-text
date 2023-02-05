@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{Attrs, AttrsOwned, Font, FontMatches};
+use crate::{Attrs, AttrsOwned, Family, Font, FontMatches};
 
 #[ouroboros::self_referencing]
 struct FontSystemInner {
@@ -71,6 +71,7 @@ impl FontSystem {
             //TODO only do this on demand!
             for i in 0..db.faces().len() {
                 let id = db.faces()[i].id;
+
                 unsafe {
                     db.make_shared_face_data(id);
                 }
@@ -128,9 +129,18 @@ impl FontSystem {
                     let now = std::time::Instant::now();
 
                     let mut fonts = Vec::new();
+                    let mut default_family = None;
+
                     for face in fields.db.faces() {
                         if !attrs.matches(face) {
                             continue;
+                        }
+
+                        match attrs.family {
+                            Family::Name(name) if face.post_script_name == name => {
+                                default_family = Some(face.family.clone());
+                            }
+                            _ => {}
                         }
 
                         if let Some(font) = get_font(&fields, face.id) {
@@ -140,7 +150,8 @@ impl FontSystem {
 
                     let font_matches = Arc::new(FontMatches {
                         locale: fields.locale,
-                        default_family: fields.db.family_name(&attrs.family).to_string(),
+                        default_family: default_family
+                            .unwrap_or_else(|| fields.db.family_name(&attrs.family).to_string()),
                         fonts,
                     });
 
