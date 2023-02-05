@@ -10,6 +10,8 @@ use core::ops::Range;
 pub use fontdb::{Family, Stretch, Style, Weight};
 use rangemap::RangeMap;
 
+use core::hash::{Hash, Hasher};
+
 /// Text color
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Color(pub u32);
@@ -179,7 +181,7 @@ impl<'a> Attrs<'a> {
 }
 
 /// An owned version of [`Attrs`]
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AttrsOwned {
     //TODO: should this be an option?
     pub color_opt: Option<Color>,
@@ -190,6 +192,28 @@ pub struct AttrsOwned {
     pub weight: Weight,
     pub metadata: usize,
 }
+
+impl Hash for AttrsOwned {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.family_owned.hash(hasher);
+        self.monospaced.hash(hasher);
+        self.stretch.hash(hasher);
+        self.style.hash(hasher);
+        self.weight.hash(hasher);
+    }
+}
+
+impl PartialEq for AttrsOwned {
+    fn eq(&self, other: &Self) -> bool {
+        self.family_owned == other.family_owned
+            && self.monospaced == other.monospaced
+            && self.stretch == other.stretch
+            && self.style == other.style
+            && self.weight == other.weight
+    }
+}
+
+impl Eq for AttrsOwned {}
 
 impl AttrsOwned {
     pub fn new(attrs: Attrs) -> Self {
