@@ -308,6 +308,7 @@ fn shape_skip(
 }
 
 /// A shaped glyph
+#[derive(Debug, Clone)]
 pub struct ShapeGlyph {
     pub start: usize,
     pub end: usize,
@@ -359,6 +360,7 @@ impl ShapeGlyph {
 }
 
 /// A shaped word (for word wrapping)
+#[derive(Debug, Clone)]
 pub struct ShapeWord {
     pub blank: bool,
     pub glyphs: Vec<ShapeGlyph>,
@@ -436,6 +438,7 @@ impl ShapeWord {
 }
 
 /// A shaped span (for bidirectional processing)
+#[derive(Debug, Clone)]
 pub struct ShapeSpan {
     pub level: unicode_bidi::Level,
     pub words: Vec<ShapeWord>,
@@ -518,6 +521,7 @@ impl ShapeSpan {
 }
 
 /// A shaped line (or paragraph)
+#[derive(Debug, Clone)]
 pub struct ShapeLine {
     pub rtl: bool,
     pub spans: Vec<ShapeSpan>,

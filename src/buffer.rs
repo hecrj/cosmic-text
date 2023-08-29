@@ -316,6 +316,7 @@ impl fmt::Display for Metrics {
 }
 
 /// A buffer of text that is shaped and laid out
+#[derive(Debug, Clone)]
 pub struct Buffer {
     /// [BufferLine]s (or paragraphs) of text in the buffer
     pub lines: Vec<BufferLine>,
