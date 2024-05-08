@@ -157,20 +157,21 @@ impl<'a> Iterator for FontFallbackIter<'a> {
                     .font_system
                     .db()
                     .family_name(self.default_families[self.default_i - 1]);
+
                 if self.face_contains_family(m_key.id, default_family) {
-                    if let Some(font) = self.font_system.get_font(m_key.id) {
-                        if !is_mono {
-                            return Some(font);
-                        } else if m_key.font_weight_diff == 0 {
-                            // Default font
-                            let fallback_info = MonospaceFallbackInfo {
-                                font_weight_diff: None,
-                                codepoint_non_matches: None,
-                                font_weight: m_key.font_weight,
-                                id: m_key.id,
-                            };
-                            assert!(self.monospace_fallbacks.insert(fallback_info));
-                        }
+                    if !is_mono {
+                        return self.font_system.get_font(m_key.id);
+                    }
+
+                    if m_key.font_weight_diff == 0 {
+                        // Default font
+                        let fallback_info = MonospaceFallbackInfo {
+                            font_weight_diff: None,
+                            codepoint_non_matches: None,
+                            font_weight: m_key.font_weight,
+                            id: m_key.id,
+                        };
+                        assert!(self.monospace_fallbacks.insert(fallback_info));
                     }
                 }
                 // Set a monospace fallback if Monospace family is not found
@@ -179,18 +180,24 @@ impl<'a> Iterator for FontFallbackIter<'a> {
                         // Don't use emoji fonts as Monospace
                         if face_info.monospaced && !face_info.post_script_name.contains("Emoji") {
                             if let Some(font) = self.font_system.get_font(m_key.id) {
-                                let codepoint_non_matches = self.word.chars().count()
-                                    - self
-                                        .word
-                                        .chars()
-                                        .filter(|ch| {
-                                            font.unicode_codepoints().contains(&u32::from(*ch))
-                                        })
-                                        .count();
+                                if self.word.is_empty() {
+                                    return Some(font);
+                                }
+
+                                let codepoint_non_matches = Some(
+                                    self.word.chars().count()
+                                        - self
+                                            .word
+                                            .chars()
+                                            .filter(|ch| {
+                                                font.unicode_codepoints().contains(&u32::from(*ch))
+                                            })
+                                            .count(),
+                                );
 
                                 let fallback_info = MonospaceFallbackInfo {
                                     font_weight_diff: Some(m_key.font_weight_diff),
-                                    codepoint_non_matches: Some(codepoint_non_matches),
+                                    codepoint_non_matches,
                                     font_weight: m_key.font_weight,
                                     id: m_key.id,
                                 };
