@@ -730,6 +730,59 @@ fn decoration_metrics(font: &Font) -> (DecorationMetrics, DecorationMetrics, f32
     )
 }
 
+/// Glyphs of `word` at word index `i` included in the given [`VlRange`].
+fn vl_range_word_glyphs<'a>(word: &'a ShapeWord, i: usize, r: &VlRange) -> &'a [ShapeGlyph] {
+    match (i == r.start.word, i == r.end.word) {
+        (false, false) => &word.glyphs[..],
+        (true, false) => &word.glyphs[r.start.glyph..],
+        (false, true) => &word.glyphs[..r.end.glyph],
+        (true, true) => &word.glyphs[r.start.glyph..r.end.glyph],
+    }
+}
+
+/// Compute the font size and x advance used to place a laid out glyph.
+///
+/// Applies the per-glyph font size override, monospace width matching and
+/// justification expansion, and rounds the advance to a whole pixel when
+/// metrics hinting is enabled.
+fn glyph_advance(
+    glyph: &ShapeGlyph,
+    blank: bool,
+    font_size: f32,
+    match_mono_width: Option<f32>,
+    justification_expansion: f32,
+    hinting: Hinting,
+) -> (f32, f32) {
+    // Use overridden font size
+    let font_size = glyph.metrics_opt.map_or(font_size, |x| x.font_size);
+
+    let match_mono_em_width = match_mono_width.map(|w| w / font_size);
+
+    let glyph_font_size = match (match_mono_em_width, glyph.font_monospace_em_width) {
+        (Some(match_em_width), Some(glyph_em_width)) if glyph_em_width != match_em_width => {
+            let glyph_to_match_factor = glyph_em_width / match_em_width;
+            let glyph_font_size =
+                math::roundf(glyph_to_match_factor).max(1.0) / glyph_to_match_factor * font_size;
+            log::trace!("Adjusted glyph font size ({font_size} => {glyph_font_size})");
+            glyph_font_size
+        }
+        _ => font_size,
+    };
+
+    let mut x_advance = glyph_font_size.mul_add(
+        glyph.x_advance,
+        if blank { justification_expansion } else { 0.0 },
+    );
+    if let Some(match_em_width) = match_mono_em_width {
+        // Round to nearest monospace width
+        x_advance = ((x_advance / match_em_width).round()) * match_em_width;
+    }
+    if hinting == Hinting::Enabled {
+        x_advance = x_advance.round();
+    }
+    (glyph_font_size, x_advance)
+}
+
 /// span index used in `VlRange` to indicate this range is the ellipsis.
 const ELLIPSIS_SPAN: usize = usize::MAX;
 
@@ -2116,6 +2169,49 @@ impl ShapeLine {
         }
     }
 
+    /// Compute the width that a visual line actually occupies when metrics
+    /// hinting is enabled: the sum of the hinted (whole-pixel) x advance of
+    /// every glyph in the line.
+    ///
+    /// This can differ from [`VisualLine::w`], which is measured with unhinted
+    /// advances. It must be used for reported line widths and alignment
+    /// corrections when hinting is enabled so that they stay consistent with
+    /// the positions the glyphs are actually laid out at.
+    ///
+    /// Justification expansion is not included: it only applies to
+    /// `Align::Justified` lines, which have no alignment correction and report
+    /// the span they are actually laid out at.
+    fn hinted_width(
+        &self,
+        visual_line: &VisualLine,
+        font_size: f32,
+        match_mono_width: Option<f32>,
+    ) -> f32 {
+        let mut width = 0.0;
+        for r in &visual_line.ranges {
+            let span_words = self.get_span_words(r.span);
+            for (i, word) in span_words
+                .iter()
+                .enumerate()
+                .take(r.end.word + usize::from(r.end.glyph != 0))
+                .skip(r.start.word)
+            {
+                for glyph in vl_range_word_glyphs(word, i, r) {
+                    let (_, x_advance) = glyph_advance(
+                        glyph,
+                        word.blank,
+                        font_size,
+                        match_mono_width,
+                        0.0,
+                        Hinting::Enabled,
+                    );
+                    width += x_advance;
+                }
+            }
+        }
+        width
+    }
+
     fn byte_range_of_vlrange(&self, r: &VlRange) -> Option<(usize, usize)> {
         debug_assert_ne!(r.span, ELLIPSIS_SPAN);
         let words = self.get_span_words(r.span);
@@ -2788,10 +2884,26 @@ impl ShapeLine {
         // Create the LayoutLines using the ranges inside visual lines
         let align = align.unwrap_or(if self.rtl { Align::Right } else { Align::Left });
 
+        // When hinting is enabled, each glyph's advance is rounded to a whole
+        // pixel during layout, so the width a visual line actually occupies can
+        // differ from the unhinted `VisualLine::w`. Measure the hinted widths so
+        // that reported line widths and alignment corrections stay consistent
+        // with the positions the glyphs are actually laid out at.
+        let hinted_widths: Option<Vec<f32>> = (hinting == Hinting::Enabled).then(|| {
+            visual_lines
+                .iter()
+                .map(|visual_line| self.hinted_width(visual_line, font_size, match_mono_width))
+                .collect()
+        });
+
         let line_width = width_opt.unwrap_or_else(|| {
             let mut width: f32 = 0.0;
-            for visual_line in &visual_lines {
-                width = width.max(visual_line.w);
+            for (index, visual_line) in visual_lines.iter().enumerate() {
+                width = width.max(
+                    hinted_widths
+                        .as_ref()
+                        .map_or(visual_line.w, |widths| widths[index]),
+                );
             }
             width
         });
@@ -2813,13 +2925,18 @@ impl ShapeLine {
             let mut y = 0.;
             let mut max_ascent: f32 = 0.;
             let mut max_descent: f32 = 0.;
+            // With hinting enabled, use the hinted width so that alignment
+            // matches the positions the glyphs are actually laid out at.
+            let visual_line_w = hinted_widths
+                .as_ref()
+                .map_or(visual_line.w, |widths| widths[index]);
             let alignment_correction = match (align, self.rtl) {
-                (Align::Left, true) => (line_width - visual_line.w).max(0.),
+                (Align::Left, true) => (line_width - visual_line_w).max(0.),
                 (Align::Left, false) => 0.,
                 (Align::Right, true) => 0.,
-                (Align::Right, false) => (line_width - visual_line.w).max(0.),
-                (Align::Center, _) => (line_width - visual_line.w).max(0.) / 2.0,
-                (Align::End, _) => (line_width - visual_line.w).max(0.),
+                (Align::Right, false) => (line_width - visual_line_w).max(0.),
+                (Align::Center, _) => (line_width - visual_line_w).max(0.) / 2.0,
+                (Align::End, _) => (line_width - visual_line_w).max(0.),
                 (Align::Justified, _) => 0.,
             };
 
@@ -2885,56 +3002,21 @@ impl ShapeLine {
                     // emitted in byte order, giving amortized O(1) lookup.
                     let mut deco_cursor: usize = 0;
                     // If ending_glyph is not 0 we need to include glyphs from the ending_word
-                    for i in r.start.word..r.end.word + usize::from(r.end.glyph != 0) {
-                        let word = &span_words[i];
-                        let included_glyphs = match (i == r.start.word, i == r.end.word) {
-                            (false, false) => &word.glyphs[..],
-                            (true, false) => &word.glyphs[r.start.glyph..],
-                            (false, true) => &word.glyphs[..r.end.glyph],
-                            (true, true) => &word.glyphs[r.start.glyph..r.end.glyph],
-                        };
-
-                        for glyph in included_glyphs {
-                            // Use overridden font size
-                            let font_size = glyph.metrics_opt.map_or(font_size, |x| x.font_size);
-
-                            let match_mono_em_width = match_mono_width.map(|w| w / font_size);
-
-                            let glyph_font_size = match (
-                                match_mono_em_width,
-                                glyph.font_monospace_em_width,
-                            ) {
-                                (Some(match_em_width), Some(glyph_em_width))
-                                    if glyph_em_width != match_em_width =>
-                                {
-                                    let glyph_to_match_factor = glyph_em_width / match_em_width;
-                                    let glyph_font_size = math::roundf(glyph_to_match_factor)
-                                        .max(1.0)
-                                        / glyph_to_match_factor
-                                        * font_size;
-                                    log::trace!(
-                                        "Adjusted glyph font size ({font_size} => {glyph_font_size})"
-                                    );
-                                    glyph_font_size
-                                }
-                                _ => font_size,
-                            };
-
-                            let mut x_advance = glyph_font_size.mul_add(
-                                glyph.x_advance,
-                                if word.blank {
-                                    justification_expansion
-                                } else {
-                                    0.0
-                                },
+                    for (i, word) in span_words
+                        .iter()
+                        .enumerate()
+                        .take(r.end.word + usize::from(r.end.glyph != 0))
+                        .skip(r.start.word)
+                    {
+                        for glyph in vl_range_word_glyphs(word, i, r) {
+                            let (glyph_font_size, x_advance) = glyph_advance(
+                                glyph,
+                                word.blank,
+                                font_size,
+                                match_mono_width,
+                                justification_expansion,
+                                hinting,
                             );
-                            if let Some(match_em_width) = match_mono_em_width {
-                                // Round to nearest monospace width
-                                x_advance = ((x_advance / match_em_width).round()) * match_em_width;
-                            }
-                            if hinting == Hinting::Enabled {
-                                x_advance = x_advance.round();
-                            }
                             if self.rtl {
                                 *x -= x_advance;
                             }
@@ -3049,7 +3131,7 @@ impl ShapeLine {
 
             layout_lines.push(LayoutLine {
                 w: if align != Align::Justified {
-                    visual_line.w
+                    visual_line_w
                 } else if self.rtl {
                     start_x - x
                 } else {

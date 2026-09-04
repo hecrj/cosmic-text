@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Use hinted line widths for layout measurements when `Hinting` is enabled, so
+  that reported line widths and alignment corrections match the positions the
+  glyphs are actually laid out at
+
 ## [0.19.0] - 2026-04-22
 
 ### Fixed
