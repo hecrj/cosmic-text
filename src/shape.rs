@@ -310,12 +310,17 @@ fn shape_run(
         scripts.clear();
         scripts
     };
-    for c in line[start_run..end_run].chars() {
-        match c.script() {
-            Script::Common | Script::Inherited | Script::Latin | Script::Unknown => (),
-            script => {
-                if !scripts.contains(&script) {
-                    scripts.push(script);
+    // ASCII characters always map to Common/Latin/Inherited/Unknown scripts,
+    // which are all ignored, so the per-character script lookup can be
+    // skipped for pure ASCII runs.
+    if !line[start_run..end_run].is_ascii() {
+        for c in line[start_run..end_run].chars() {
+            match c.script() {
+                Script::Common | Script::Inherited | Script::Latin | Script::Unknown => (),
+                script => {
+                    if !scripts.contains(&script) {
+                        scripts.push(script);
+                    }
                 }
             }
         }
