@@ -78,11 +78,11 @@ impl FontMatchKey {
 #[derive(Debug)]
 pub struct MonoFontMatches {
     /// Match keys of all monospaced faces in the database.
-    pub keys: Vec<FontMatchKey>,
+    pub(crate) keys: Vec<FontMatchKey>,
 
     /// The default family's match key with zero weight difference (or a
     /// variable weight match), if any.
-    pub default_key: Option<FontMatchKey>,
+    pub(crate) default_key: Option<FontMatchKey>,
 
     /// Monospace fallback candidates, best first.
     ///
@@ -92,7 +92,7 @@ pub struct MonoFontMatches {
     /// for every word. With the feature enabled the ranking depends on the
     /// word's codepoint coverage and is cached per word by
     /// [`FontSystem::get_monospace_ranking`] instead.
-    pub ranked: Vec<MonospaceFallbackInfo>,
+    pub(crate) ranked: Vec<MonospaceFallbackInfo>,
 }
 
 struct FontCachedCodepointSupportInfo {
@@ -568,7 +568,7 @@ impl FontSystem {
             self.monospace_font_matches_cache.clear();
         }
 
-        let key: FontMatchAttrs = attrs.into();
+        let key = attrs.into();
         if let Some(matches) = self.monospace_font_matches_cache.get(&key) {
             return matches.clone();
         }
@@ -630,9 +630,9 @@ impl FontSystem {
             default_key,
             ranked,
         });
-        let cache_value = matches.clone();
-        self.monospace_font_matches_cache.insert(key, matches);
-        cache_value
+        self.monospace_font_matches_cache
+            .insert(key, matches.clone());
+        matches
     }
 
     /// Get the cached per-word monospace fallback ranking for the given
@@ -643,6 +643,11 @@ impl FontSystem {
     /// [`Self::get_monospace_font_matches`] - it is cached per word as well.
     /// The same word is shaped repeatedly (e.g. every whitespace run in a
     /// terminal UI), so the per-word cache hits most of the time.
+    ///
+    /// If the default monospace font covers every codepoint of the word,
+    /// the ranking is truncated to that font alone: the other candidates
+    /// could not rank above it, and skipping their coverage checks is what
+    /// keeps fully-covered words cheap.
     ///
     /// This is only used by the `monospace_fallback` feature path; with the
     /// feature disabled the word-independent ranking is available from
@@ -660,25 +665,20 @@ impl FontSystem {
             self.monospace_rankings_cache.clear();
         }
 
-        let key: (FontMatchAttrs, smol_str::SmolStr) = (attrs.into(), word.into());
+        let key = (attrs.into(), word.into());
         if let Some(ranking) = self.monospace_rankings_cache.get(&key) {
             return ranking.clone();
         }
 
-        let mono_ids_for_scripts = if scripts.is_empty() {
-            Vec::new()
-        } else {
-            let scripts = scripts.iter().filter_map(|script| {
+        let mono_ids_for_scripts =
+            self.get_monospace_ids_for_scripts(scripts.iter().filter_map(|script| {
                 let script_as_lower = script.short_name().to_lowercase();
                 <[u8; 4]>::try_from(script_as_lower.as_bytes()).ok()
-            });
-            self.get_monospace_ids_for_scripts(scripts)
-        };
+            }));
 
         let word_chars_count = word.chars().count();
         let mut ranking = Vec::new();
-        let default_key = mono.default_key;
-        if let Some(default_key) = default_key {
+        if let Some(default_key) = mono.default_key {
             if let Some(supported_cp_count) =
                 self.get_font_supported_codepoints_in_word(default_key.id, attrs.weight, word)
             {
@@ -693,15 +693,14 @@ impl FontSystem {
                     // The default Monospace font supports all word codepoints:
                     // return it alone, like the non-mono fast path.
                     let arc = Arc::new(ranking);
-                    let cache_value = arc.clone();
-                    self.monospace_rankings_cache.insert(key, arc);
-                    return cache_value;
+                    self.monospace_rankings_cache.insert(key, arc.clone());
+                    return arc;
                 }
             }
         }
 
         for m_key in mono.keys.iter() {
-            if Some(m_key.id) == default_key.map(|m_key| m_key.id) {
+            if Some(m_key.id) == mono.default_key.map(|dk| dk.id) {
                 continue;
             }
             if !mono_ids_for_scripts.is_empty()
@@ -723,9 +722,8 @@ impl FontSystem {
 
         ranking.sort();
         let arc = Arc::new(ranking);
-        let cache_value = arc.clone();
-        self.monospace_rankings_cache.insert(key, arc);
-        cache_value
+        self.monospace_rankings_cache.insert(key, arc.clone());
+        arc
     }
 
     #[cfg(feature = "std")]

@@ -4,15 +4,20 @@
 //! for every word (including every whitespace-only word), making it 10-20x
 //! slower than shaping with an explicit `Family::Name`.
 
-use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping};
+use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
 use std::path::PathBuf;
+
+/// The directory containing the test fonts bundled with the repo.
+fn fonts_path() -> PathBuf {
+    let repo_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    PathBuf::from(&repo_dir).join("fonts")
+}
 
 /// Build a font database containing only the repo test fonts, i.e. no
 /// "Noto Sans Mono" - cosmic-text's default monospace family - simulating
 /// e.g. a stock macOS system.
 fn font_system() -> FontSystem {
-    let repo_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let fonts_path = PathBuf::from(&repo_dir).join("fonts");
+    let fonts_path = fonts_path();
 
     let mut db = fontdb::Database::new();
     db.load_font_data(std::fs::read(fonts_path.join("FiraMono-Medium.ttf")).unwrap());
@@ -78,7 +83,7 @@ fn monospace_family_default_installed() {
         SPACED_TEXT,
         &Attrs::new()
             .family(Family::Monospace)
-            .weight(cosmic_text::Weight::MEDIUM),
+            .weight(Weight::MEDIUM),
         Shaping::Advanced,
         None,
     );
@@ -100,6 +105,65 @@ fn monospace_family_default_installed() {
     }
 }
 
+/// When the face of the default monospace family cannot be loaded (e.g. the
+/// font file was deleted after the database was indexed), shaping with
+/// `Family::Monospace` must still fall back to a loadable monospace face
+/// instead of giving up on monospace fonts.
+#[test]
+fn monospace_family_default_unloadable() {
+    let fonts_path = fonts_path();
+
+    // Load Fira Mono from a file, then delete the file, so the face stays in
+    // the database but its data can no longer be loaded. An in-memory copy of
+    // the same font (a second face of "Fira Mono") is the loadable fallback.
+    let broken_path = std::env::temp_dir().join(format!(
+        "cosmic-text-test-{}-FiraMono-Medium.ttf",
+        std::process::id()
+    ));
+    std::fs::copy(fonts_path.join("FiraMono-Medium.ttf"), &broken_path).unwrap();
+
+    let mut db = fontdb::Database::new();
+    db.load_font_file(&broken_path).unwrap();
+    std::fs::remove_file(&broken_path).unwrap();
+    db.load_font_data(std::fs::read(fonts_path.join("FiraMono-Medium.ttf")).unwrap());
+    db.load_font_data(std::fs::read(fonts_path.join("Inter-Regular.ttf")).unwrap());
+    // Mirror the defaults set by `FontSystem` for the generic families.
+    db.set_monospace_family("Fira Mono");
+    db.set_sans_serif_family("Open Sans");
+    db.set_serif_family("DejaVu Serif");
+
+    let mut font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+    let metrics = Metrics::new(14.0, 20.0);
+    let mut buffer = Buffer::new(&mut font_system, metrics);
+
+    // Fira Mono Medium registers at weight Medium, so request that weight.
+    buffer.set_text(
+        SPACED_TEXT,
+        &Attrs::new()
+            .family(Family::Monospace)
+            .weight(Weight::MEDIUM),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut font_system, false);
+
+    let glyph_font_ids: Vec<fontdb::ID> = buffer
+        .layout_runs()
+        .flat_map(|run| run.glyphs.iter().map(|g| g.font_id))
+        .collect();
+
+    assert!(!glyph_font_ids.is_empty(), "no glyphs produced");
+    for id in glyph_font_ids {
+        let face = font_system.db().face(id).unwrap();
+        assert!(
+            face.monospaced,
+            "expected a monospace face while the default monospace font is \
+             unloadable, got {:?}",
+            face.families
+        );
+    }
+}
+
 /// `Family::Monospace` and an explicit `Family::Name` of the same font
 /// must pick the same face for the same text (the generic family must not
 /// change which font is used, only how it is found).
@@ -108,7 +172,7 @@ fn monospace_family_matches_explicit_name() {
     let mut font_system = font_system();
     let metrics = Metrics::new(14.0, 20.0);
     // Fira Mono Medium registers at weight Medium.
-    let weight = cosmic_text::Weight::MEDIUM;
+    let weight = Weight::MEDIUM;
 
     let mut generic = Buffer::new(&mut font_system, metrics);
     generic.set_text(
