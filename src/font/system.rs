@@ -189,7 +189,7 @@ pub struct FontSystem {
     /// with the feature disabled the ranking is word-independent and stored
     /// in [`MonoFontMatches::ranked`] instead.
     monospace_rankings_cache:
-        HashMap<(FontMatchAttrs, smol_str::SmolStr), Arc<Vec<MonospaceFallbackInfo>>>,
+        HashMap<(FontMatchAttrs, smol_str::SmolStr), Arc<[MonospaceFallbackInfo]>>,
 
     /// Scratch buffer for shaping and laying out.
     pub(crate) shape_buffer: ShapeBuffer,
@@ -610,13 +610,7 @@ impl FontSystem {
                 .iter()
                 .filter(|m_key| !matches!(default_key, Some(ref dk) if dk.id == m_key.id))
                 .collect();
-            others.sort_by(|a, b| {
-                (a.font_weight_diff, a.font_weight, a.id).cmp(&(
-                    b.font_weight_diff,
-                    b.font_weight,
-                    b.id,
-                ))
-            });
+            others.sort_by_key(|m_key| (m_key.font_weight_diff, m_key.font_weight, m_key.id));
             ranked.extend(others.iter().map(|m_key| MonospaceFallbackInfo {
                 font_weight_diff: Some(m_key.font_weight_diff),
                 codepoint_non_matches: None,
@@ -658,7 +652,7 @@ impl FontSystem {
         mono: &MonoFontMatches,
         word: &str,
         scripts: &[unicode_script::Script],
-    ) -> Arc<Vec<MonospaceFallbackInfo>> {
+    ) -> Arc<[MonospaceFallbackInfo]> {
         // Clear the cache first if it reached the size limit
         if self.monospace_rankings_cache.len() >= Self::FONT_MATCHES_CACHE_SIZE_LIMIT {
             log::trace!("clear monospace rankings cache");
@@ -692,7 +686,7 @@ impl FontSystem {
                 if codepoint_non_matches == 0 {
                     // The default Monospace font supports all word codepoints:
                     // return it alone, like the non-mono fast path.
-                    let arc = Arc::new(ranking);
+                    let arc: Arc<[MonospaceFallbackInfo]> = Arc::from(ranking);
                     self.monospace_rankings_cache.insert(key, arc.clone());
                     return arc;
                 }
@@ -721,7 +715,7 @@ impl FontSystem {
         }
 
         ranking.sort();
-        let arc = Arc::new(ranking);
+        let arc: Arc<[MonospaceFallbackInfo]> = Arc::from(ranking);
         self.monospace_rankings_cache.insert(key, arc.clone());
         arc
     }
