@@ -301,12 +301,6 @@ impl<'a> FontFallbackIter<'a> {
             .find(|m_key| self.face_contains_family(m_key.id, default_family_name))
     }
 
-    /// Whether the cached monospace font match data (keyed by
-    /// [`Self::attrs`]) applies to the default family being evaluated.
-    fn mono_matches_applicable(&self) -> bool {
-        self.default_families.len() == 1 && self.default_families[0] == &self.attrs.family
-    }
-
     fn next_item(&mut self, fallbacks: &Fallbacks) -> Option<<Self as Iterator>::Item> {
         // Monospace fast path: when the requested default family is the
         // generic `Family::Monospace` and matches the attributes the font
@@ -320,7 +314,8 @@ impl<'a> FontFallbackIter<'a> {
         // codepoint coverage.
         if self.default_i == 0
             && self.attrs.family == Family::Monospace
-            && self.mono_matches_applicable()
+            && self.default_families.len() == 1
+            && self.default_families[0] == &Family::Monospace
         {
             let mono_matches = self
                 .mono_matches
