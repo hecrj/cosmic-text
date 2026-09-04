@@ -69,6 +69,32 @@ impl FontMatchKey {
     }
 }
 
+/// Monospace font match data for a set of attributes.
+///
+/// This is precomputed once per unique [`FontMatchAttrs`] by
+/// [`FontSystem::get_monospace_font_matches`] so that shaping with the
+/// generic `Family::Monospace` doesn't have to rescan every face in the
+/// database for every word.
+#[derive(Debug)]
+pub struct MonoFontMatches {
+    /// Match keys of all monospaced faces in the database.
+    pub keys: Vec<FontMatchKey>,
+
+    /// The default family's match key with zero weight difference (or a
+    /// variable weight match), if any.
+    pub default_key: Option<FontMatchKey>,
+
+    /// Monospace fallback candidates, best first.
+    ///
+    /// Only populated when the `monospace_fallback` feature is disabled.
+    /// In that case glyph coverage data is unavailable, so the candidate
+    /// ranking doesn't depend on the word being shaped and can be reused
+    /// for every word. With the feature enabled the ranking depends on the
+    /// word's codepoint coverage and is cached per word by
+    /// [`FontSystem::get_monospace_ranking`] instead.
+    pub ranked: Vec<MonospaceFallbackInfo>,
+}
+
 struct FontCachedCodepointSupportInfo {
     supported: Vec<u32>,
     not_supported: Vec<u32>,
@@ -152,6 +178,18 @@ pub struct FontSystem {
 
     /// Cache for font matches.
     font_matches_cache: HashMap<FontMatchAttrs, Arc<Vec<FontMatchKey>>>,
+
+    /// Cache for monospace font matches.
+    monospace_font_matches_cache: HashMap<FontMatchAttrs, Arc<MonoFontMatches>>,
+
+    /// Cache for the per-word monospace fallback rankings used by the
+    /// `monospace_fallback` feature path, keyed by (font match attrs, word).
+    ///
+    /// Only populated when the `monospace_fallback` feature is enabled;
+    /// with the feature disabled the ranking is word-independent and stored
+    /// in [`MonoFontMatches::ranked`] instead.
+    monospace_rankings_cache:
+        HashMap<(FontMatchAttrs, smol_str::SmolStr), Arc<Vec<MonospaceFallbackInfo>>>,
 
     /// Scratch buffer for shaping and laying out.
     pub(crate) shape_buffer: ShapeBuffer,
@@ -340,6 +378,8 @@ impl FontSystem {
             per_script_monospace_font_ids,
             font_cache: HashMap::default(),
             font_matches_cache: HashMap::default(),
+            monospace_font_matches_cache: HashMap::default(),
+            monospace_rankings_cache: HashMap::default(),
             font_codepoint_support_info_cache: HashMap::default(),
             monospace_fallbacks_buffer: BTreeSet::default(),
             #[cfg(feature = "shape-run-cache")]
@@ -368,6 +408,8 @@ impl FontSystem {
     /// Get a mutable reference to the database.
     pub fn db_mut(&mut self) -> &mut fontdb::Database {
         self.font_matches_cache.clear();
+        self.monospace_font_matches_cache.clear();
+        self.monospace_rankings_cache.clear();
         &mut self.db
     }
 
@@ -493,6 +535,197 @@ impl FontSystem {
                 Arc::new(font_match_keys)
             })
             .clone()
+    }
+
+    /// Whether the face with the given ID contains the given family name.
+    pub fn face_contains_family(&self, id: fontdb::ID, family_name: &str) -> bool {
+        self.db
+            .face(id)
+            .is_some_and(|face| face.families.iter().any(|(name, _)| name == family_name))
+    }
+
+    /// Get the cached monospace font match data for the given attributes.
+    ///
+    /// This precomputes, once per unique set of font match attributes, the
+    /// monospace-related parts of the font matching process
+    /// (see [`Self::get_font_matches`]):
+    ///
+    /// - [`MonoFontMatches::keys`] - match keys of all monospaced faces,
+    /// - [`MonoFontMatches::default_key`] - the default family's weight
+    ///   matched key (if any), and
+    /// - [`MonoFontMatches::ranked`] - the fully ranked monospace fallback
+    ///   candidates, when the `monospace_fallback` feature is disabled and
+    ///   the ranking is therefore independent of the shaped word.
+    ///
+    /// Shaping with the generic `Family::Monospace` used to rescan every
+    /// face in the database (an `O(faces)` coverage test) for every word,
+    /// including every whitespace-only word. These results let the
+    /// fallback iterator reuse the precomputed data instead.
+    pub fn get_monospace_font_matches(&mut self, attrs: &Attrs<'_>) -> Arc<MonoFontMatches> {
+        // Clear the cache first if it reached the size limit
+        if self.monospace_font_matches_cache.len() >= Self::FONT_MATCHES_CACHE_SIZE_LIMIT {
+            log::trace!("clear monospace font matches cache");
+            self.monospace_font_matches_cache.clear();
+        }
+
+        let key: FontMatchAttrs = attrs.into();
+        if let Some(matches) = self.monospace_font_matches_cache.get(&key) {
+            return matches.clone();
+        }
+
+        let font_match_keys = self.get_font_matches(attrs);
+        let default_family_name = self.db.family_name(&attrs.family);
+
+        let mut keys = Vec::new();
+        let mut default_key = None;
+        for m_key in font_match_keys.iter() {
+            if default_key.is_none()
+                && (m_key.font_weight_diff == 0 || m_key.variable_weight_match)
+                && self.face_contains_family(m_key.id, default_family_name)
+            {
+                default_key = Some(*m_key);
+            }
+            if self.is_monospace(m_key.id) {
+                keys.push(*m_key);
+            }
+        }
+
+        // When the `monospace_fallback` feature is disabled, glyph coverage
+        // data is unavailable and the codepoint ranking is identical for
+        // every word, so the full ranking can be precomputed here: the
+        // default family's match (if any) sorts first (its
+        // `font_weight_diff` is `None`), and the remaining candidates are
+        // ordered by (weight difference, weight, id).
+        let mut ranked = Vec::new();
+        if !cfg!(feature = "monospace_fallback") {
+            if let Some(default_key) = default_key {
+                ranked.push(MonospaceFallbackInfo {
+                    font_weight_diff: None,
+                    codepoint_non_matches: None,
+                    font_weight: default_key.font_weight,
+                    id: default_key.id,
+                });
+            }
+            let mut others: Vec<&FontMatchKey> = keys
+                .iter()
+                .filter(|m_key| !matches!(default_key, Some(ref dk) if dk.id == m_key.id))
+                .collect();
+            others.sort_by(|a, b| {
+                (a.font_weight_diff, a.font_weight, a.id).cmp(&(
+                    b.font_weight_diff,
+                    b.font_weight,
+                    b.id,
+                ))
+            });
+            ranked.extend(others.iter().map(|m_key| MonospaceFallbackInfo {
+                font_weight_diff: Some(m_key.font_weight_diff),
+                codepoint_non_matches: None,
+                font_weight: m_key.font_weight,
+                id: m_key.id,
+            }));
+        }
+
+        let matches = Arc::new(MonoFontMatches {
+            keys,
+            default_key,
+            ranked,
+        });
+        let cache_value = matches.clone();
+        self.monospace_font_matches_cache.insert(key, matches);
+        cache_value
+    }
+
+    /// Get the cached per-word monospace fallback ranking for the given
+    /// attributes and word.
+    ///
+    /// The ranking (best candidate first, see [`MonospaceFallbackInfo`])
+    /// depends on the word's codepoint coverage, so - unlike
+    /// [`Self::get_monospace_font_matches`] - it is cached per word as well.
+    /// The same word is shaped repeatedly (e.g. every whitespace run in a
+    /// terminal UI), so the per-word cache hits most of the time.
+    ///
+    /// This is only used by the `monospace_fallback` feature path; with the
+    /// feature disabled the word-independent ranking is available from
+    /// [`MonoFontMatches::ranked`].
+    pub fn get_monospace_ranking(
+        &mut self,
+        attrs: &Attrs<'_>,
+        mono: &MonoFontMatches,
+        word: &str,
+        scripts: &[unicode_script::Script],
+    ) -> Arc<Vec<MonospaceFallbackInfo>> {
+        // Clear the cache first if it reached the size limit
+        if self.monospace_rankings_cache.len() >= Self::FONT_MATCHES_CACHE_SIZE_LIMIT {
+            log::trace!("clear monospace rankings cache");
+            self.monospace_rankings_cache.clear();
+        }
+
+        let key: (FontMatchAttrs, smol_str::SmolStr) = (attrs.into(), word.into());
+        if let Some(ranking) = self.monospace_rankings_cache.get(&key) {
+            return ranking.clone();
+        }
+
+        let mono_ids_for_scripts = if scripts.is_empty() {
+            Vec::new()
+        } else {
+            let scripts = scripts.iter().filter_map(|script| {
+                let script_as_lower = script.short_name().to_lowercase();
+                <[u8; 4]>::try_from(script_as_lower.as_bytes()).ok()
+            });
+            self.get_monospace_ids_for_scripts(scripts)
+        };
+
+        let word_chars_count = word.chars().count();
+        let mut ranking = Vec::new();
+        let default_key = mono.default_key;
+        if let Some(default_key) = default_key {
+            if let Some(supported_cp_count) =
+                self.get_font_supported_codepoints_in_word(default_key.id, attrs.weight, word)
+            {
+                let codepoint_non_matches = word_chars_count - supported_cp_count;
+                ranking.push(MonospaceFallbackInfo {
+                    font_weight_diff: None,
+                    codepoint_non_matches: Some(codepoint_non_matches),
+                    font_weight: default_key.font_weight,
+                    id: default_key.id,
+                });
+                if codepoint_non_matches == 0 {
+                    // The default Monospace font supports all word codepoints:
+                    // return it alone, like the non-mono fast path.
+                    let arc = Arc::new(ranking);
+                    let cache_value = arc.clone();
+                    self.monospace_rankings_cache.insert(key, arc);
+                    return cache_value;
+                }
+            }
+        }
+
+        for m_key in mono.keys.iter() {
+            if Some(m_key.id) == default_key.map(|m_key| m_key.id) {
+                continue;
+            }
+            if !mono_ids_for_scripts.is_empty()
+                && mono_ids_for_scripts.binary_search(&m_key.id).is_err()
+            {
+                continue;
+            }
+            if let Some(supported_cp_count) =
+                self.get_font_supported_codepoints_in_word(m_key.id, attrs.weight, word)
+            {
+                ranking.push(MonospaceFallbackInfo {
+                    font_weight_diff: Some(m_key.font_weight_diff),
+                    codepoint_non_matches: Some(word_chars_count - supported_cp_count),
+                    font_weight: m_key.font_weight,
+                    id: m_key.id,
+                });
+            }
+        }
+
+        ranking.sort();
+        let arc = Arc::new(ranking);
+        let cache_value = arc.clone();
+        self.monospace_rankings_cache.insert(key, arc);
+        cache_value
     }
 
     #[cfg(feature = "std")]
