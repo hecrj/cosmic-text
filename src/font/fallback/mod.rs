@@ -177,10 +177,10 @@ use log::warn as missing_warn;
 // always the first to be popped from the set.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MonospaceFallbackInfo {
-    pub font_weight_diff: Option<u16>,
-    pub codepoint_non_matches: Option<usize>,
-    pub font_weight: u16,
-    pub id: fontdb::ID,
+    pub(crate) font_weight_diff: Option<u16>,
+    pub(crate) codepoint_non_matches: Option<usize>,
+    pub(crate) font_weight: u16,
+    pub(crate) id: fontdb::ID,
 }
 
 #[derive(Debug)]
@@ -199,7 +199,7 @@ pub struct FontFallbackIter<'a> {
     attrs: &'a Attrs<'a>,
     /// Cached monospace font match data for [`Self::attrs`], lazily fetched.
     mono_matches: Option<Arc<MonoFontMatches>>,
-    /// Index of the next candidate in [`MonoFontMatches::ranked`].
+    /// Index of the next candidate in the cached monospace ranking.
     mono_idx: usize,
 }
 
@@ -208,9 +208,9 @@ impl<'a> FontFallbackIter<'a> {
     ///
     /// `font_match_keys` must be the result of
     /// [`FontSystem::get_font_matches`] for `attrs`, and `default_families`
-    /// should be `&[&attrs.family]`, so that the cached monospace fallback
-    /// data (keyed by `attrs`) can be reused instead of rescanning the
-    /// database for every word.
+    /// should only contain `attrs.family`, so that the cached monospace
+    /// fallback data (keyed by `attrs`) can be reused instead of rescanning
+    /// the database for every word.
     pub fn new(
         font_system: &'a mut FontSystem,
         font_match_keys: &'a [FontMatchKey],
@@ -307,14 +307,6 @@ impl<'a> FontFallbackIter<'a> {
         self.default_families.len() == 1 && self.default_families[0] == &self.attrs.family
     }
 
-    /// Lazily fetch the cached monospace font match data for
-    /// [`Self::attrs`].
-    fn ensure_mono_matches(&mut self) {
-        if self.mono_matches.is_none() {
-            self.mono_matches = Some(self.font_system.get_monospace_font_matches(self.attrs));
-        }
-    }
-
     fn next_item(&mut self, fallbacks: &Fallbacks) -> Option<<Self as Iterator>::Item> {
         // Monospace fast path: when the requested default family is the
         // generic `Family::Monospace` and matches the attributes the font
@@ -327,43 +319,35 @@ impl<'a> FontFallbackIter<'a> {
         // is cached per (attributes, word) because it depends on the word's
         // codepoint coverage.
         if self.default_i == 0
-            && self.default_families.len() == 1
-            && self.default_families[0] == &Family::Monospace
+            && self.attrs.family == Family::Monospace
             && self.mono_matches_applicable()
         {
-            self.ensure_mono_matches();
             let mono_matches = self
                 .mono_matches
-                .as_ref()
-                .expect("mono matches just fetched");
-            let mono_ranking: Option<Arc<Vec<MonospaceFallbackInfo>>> =
-                if cfg!(feature = "monospace_fallback") {
-                    Some(self.font_system.get_monospace_ranking(
-                        self.attrs,
-                        mono_matches,
-                        self.word,
-                        self.scripts,
-                    ))
-                } else {
-                    None
-                };
-            let ranking: &Vec<MonospaceFallbackInfo> = match mono_ranking.as_ref() {
-                Some(ranking) => ranking,
-                None => &mono_matches.ranked,
+                .get_or_insert_with(|| self.font_system.get_monospace_font_matches(self.attrs));
+            let ranking: &[MonospaceFallbackInfo] = if cfg!(feature = "monospace_fallback") {
+                &self.font_system.get_monospace_ranking(
+                    self.attrs,
+                    mono_matches,
+                    self.word,
+                    self.scripts,
+                )
+            } else {
+                &mono_matches.ranked
             };
-            if self.mono_idx < ranking.len() {
-                // Walk the cached ranking until a candidate loads (or it is
-                // exhausted); a candidate that fails to load is skipped.
-                while self.mono_idx < ranking.len() {
-                    let id = ranking[self.mono_idx].id;
-                    self.mono_idx += 1;
-                    if let Some(font) = self.font_system.get_font(id, self.ideal_weight) {
-                        return Some(font);
-                    }
+            // Walk the cached ranking until a candidate loads; candidates
+            // that fail to load are skipped.
+            while self.mono_idx < ranking.len() {
+                let id = ranking[self.mono_idx].id;
+                self.mono_idx += 1;
+                if let Some(font) = self.font_system.get_font(id, self.ideal_weight) {
+                    return Some(font);
                 }
             }
-            // No more loadable monospace candidates: consume the default
-            // family and fall through to the generic fallbacks below.
+            // The cached ranking covers every monospace candidate the
+            // generic path below would enumerate, so consume the default
+            // family to skip that enumeration (as the generic path does
+            // after evaluating the family once).
             self.default_i = 1;
         }
 

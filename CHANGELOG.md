@@ -9,19 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Shaping with the generic `Family::Monospace` is no longer 10-20x slower than
-  shaping with an explicit `Family::Name`. The monospace fallback candidates
-  (and their ranking, when the `monospace_fallback` feature is disabled or
-  the default monospace font covers the word) are now precomputed and cached
-  per attribute set / per word instead of rescanning every face in the
-  database for every word, including every whitespace-only word:
-  https://github.com/pop-os/cosmic-text/issues/518
+- Cache monospace fallback candidates to speed up `Family::Monospace` shaping: https://github.com/pop-os/cosmic-text/issues/518
 
 ### Changed
 
-- `FontFallbackIter::new` now takes the `Attrs` the font match keys were
-  computed with, so the cached monospace fallback data can be reused:
-  https://github.com/pop-os/cosmic-text/issues/518
+- `FontFallbackIter::new` now takes the `Attrs` the font match keys were computed with: https://github.com/pop-os/cosmic-text/issues/518
 
 ## [0.19.0] - 2026-04-22
 
