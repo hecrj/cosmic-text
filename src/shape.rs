@@ -1366,7 +1366,31 @@ impl ShapeLine {
         cached_spans.clear();
         cached_spans.extend(spans.drain(..).rev());
 
-        let bidi = unicode_bidi::BidiInfo::new(line, direction.bidi_level());
+        // Pure ASCII text cannot contain strong RTL characters, paragraph
+        // separators, or BiDi controls, so with an LTR paragraph base it is
+        // always a single LTR paragraph at level 0. Construct the BidiInfo
+        // directly to skip the per-character BiDi analysis.
+        let ascii_fast_path =
+            line.is_ascii() && matches!(direction, Direction::Auto | Direction::LeftToRight);
+        let bidi = if ascii_fast_path {
+            let mut paragraphs = Vec::new();
+            if !line.is_empty() {
+                paragraphs.push(unicode_bidi::ParagraphInfo {
+                    range: 0..line.len(),
+                    level: unicode_bidi::Level::ltr(),
+                });
+            }
+            // `original_classes` is only read by `adjust_levels`, which the
+            // fast path skips below, so leave it empty.
+            unicode_bidi::BidiInfo {
+                text: line,
+                original_classes: Vec::new(),
+                levels: vec![unicode_bidi::Level::ltr(); line.len()],
+                paragraphs,
+            }
+        } else {
+            unicode_bidi::BidiInfo::new(line, direction.bidi_level())
+        };
         let rtl = if bidi.paragraphs.is_empty() {
             // No strong content to detect from, go with default base direction if it's set
             direction == Direction::RightToLeft
@@ -1378,7 +1402,14 @@ impl ShapeLine {
 
         for para_info in &bidi.paragraphs {
             let line_range = para_info.range.clone();
-            let levels = Self::adjust_levels(&unicode_bidi::Paragraph::new(&bidi, para_info));
+            // `adjust_levels` is a no-op for the pure-ASCII fast path (no
+            // B/S classes to reset and the paragraph level is already 0), so
+            // use the levels as-is and avoid its per-char scan and clone.
+            let levels = if ascii_fast_path {
+                bidi.levels.clone()
+            } else {
+                Self::adjust_levels(&unicode_bidi::Paragraph::new(&bidi, para_info))
+            };
 
             // Find consecutive level runs. We use this to create Spans.
             // Each span is a set of characters with equal levels.
