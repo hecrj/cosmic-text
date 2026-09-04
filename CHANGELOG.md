@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Cache monospace fallback candidates to speed up `Family::Monospace` shaping: https://github.com/pop-os/cosmic-text/issues/518
+
+### Changed
+
+- `FontFallbackIter::new` now takes the `Attrs` the font match keys were computed with: https://github.com/pop-os/cosmic-text/issues/518
+
 ## [0.19.0] - 2026-04-22
 
 ### Fixed
