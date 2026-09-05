@@ -275,11 +275,7 @@ impl BufferLine {
             self.shape(font_system, tab_width, direction);
             let attrs_list = &self.attrs_list;
             let shape = self.shape_opt.get().expect("shape not found");
-            let span_decorations: Vec<_> = shape
-                .spans
-                .iter()
-                .map(|span| span.decorations(attrs_list, font_system))
-                .collect();
+            shape.fill_span_decorations(attrs_list, font_system);
             shape.layout_to_buffer(
                 &mut font_system.shape_buffer,
                 font_size,
@@ -290,7 +286,6 @@ impl BufferLine {
                 &mut layout,
                 match_mono_width,
                 hinting,
-                &span_decorations,
             );
             self.layout_opt.set_used(layout);
         }

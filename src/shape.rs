@@ -126,6 +126,14 @@ pub struct ShapeBuffer {
     /// Buffer for shape words.
     words: Vec<ShapeWord>,
 
+    /// Decoration data for the shape spans of the line currently being laid
+    /// out, stored flat. `span_decoration_offsets` holds the per-span
+    /// boundaries into this buffer. Cleared and refilled on every layout.
+    span_decoration_data: Vec<(Range<usize>, GlyphDecorationData)>,
+
+    /// For each shape span, the range of its entries in `span_decoration_data`.
+    span_decoration_offsets: Vec<Range<usize>>,
+
     /// Buffers for visual lines.
     visual_lines: Vec<VisualLine>,
     cached_visual_lines: Vec<VisualLine>,
@@ -1122,15 +1130,16 @@ impl ShapeSpan {
     }
 
     /// The decoration spans for this shape span, resolved from the current
-    /// attrs. Font metrics come from the primary font (first shaped glyph),
+    /// attrs. They are appended to the reusable scratch buffer in
+    /// `font_system` and the range of the appended entries is returned.
+    /// Font metrics come from the primary font (first shaped glyph),
     /// following Pango convention.
-    pub fn decorations(
+    pub(crate) fn decorations_into(
         &self,
         attrs_list: &AttrsList,
         font_system: &mut FontSystem,
-    ) -> Vec<(Range<usize>, GlyphDecorationData)> {
+    ) -> Range<usize> {
         let span_range = self.byte_range.clone();
-        let mut decorations = Vec::new();
 
         // Early-out: skip font lookup and span iteration when no decorations exist.
         // For plain text (the common case) this is a single bool check.
@@ -1140,69 +1149,44 @@ impl ShapeSpan {
                 let end = range.end.min(span_range.end);
                 start < end && attr_owned.as_attrs().text_decoration.has_decoration()
             });
+        if !any_decoration {
+            let len = font_system.shape_buffer.span_decoration_data.len();
+            return len..len;
+        }
 
-        if any_decoration {
-            // Get font metrics once from the primary glyph of this shape span
-            let primary_metrics = self
-                .words
-                .iter()
-                .flat_map(|w| w.glyphs.first())
-                .next()
-                .and_then(|glyph| {
-                    font_system
-                        .get_font(glyph.font_id, glyph.font_weight)
-                        .map(|font| decoration_metrics(&font))
-                });
+        // Get font metrics once from the primary glyph of this shape span
+        let primary_metrics = self
+            .words
+            .iter()
+            .flat_map(|w| w.glyphs.first())
+            .next()
+            .and_then(|glyph| {
+                font_system
+                    .get_font(glyph.font_id, glyph.font_weight)
+                    .map(|font| decoration_metrics(&font))
+            });
 
-            if let Some((ul_metrics, st_metrics, ascent)) = primary_metrics {
-                // Track which sub-ranges of span_range are covered by explicit spans
-                let mut covered_end = span_range.start;
+        let out = &mut font_system.shape_buffer.span_decoration_data;
+        let start = out.len();
 
-                for (range, attr_owned) in attrs_list.spans_iter() {
-                    // Compute intersection with our shape span's byte range
-                    let start = range.start.max(span_range.start);
-                    let end = range.end.min(span_range.end);
-                    if start >= end {
-                        continue;
-                    }
+        if let Some((ul_metrics, st_metrics, ascent)) = primary_metrics {
+            // Track which sub-ranges of span_range are covered by explicit spans
+            let mut covered_end = span_range.start;
 
-                    // Check the gap before this span (covered by defaults)
-                    if covered_end < start {
-                        let default_attrs = attrs_list.defaults();
-                        if default_attrs.text_decoration.has_decoration() {
-                            decorations.push((
-                                covered_end..start,
-                                GlyphDecorationData {
-                                    text_decoration: default_attrs.text_decoration,
-                                    underline_metrics: ul_metrics,
-                                    strikethrough_metrics: st_metrics,
-                                    ascent,
-                                },
-                            ));
-                        }
-                    }
-                    covered_end = end;
-
-                    let attrs = attr_owned.as_attrs();
-                    if attrs.text_decoration.has_decoration() {
-                        decorations.push((
-                            start..end,
-                            GlyphDecorationData {
-                                text_decoration: attrs.text_decoration,
-                                underline_metrics: ul_metrics,
-                                strikethrough_metrics: st_metrics,
-                                ascent,
-                            },
-                        ));
-                    }
+            for (range, attr_owned) in attrs_list.spans_iter() {
+                // Compute intersection with our shape span's byte range
+                let start = range.start.max(span_range.start);
+                let end = range.end.min(span_range.end);
+                if start >= end {
+                    continue;
                 }
 
-                // Check trailing gap (covered by defaults)
-                if covered_end < span_range.end {
+                // Check the gap before this span (covered by defaults)
+                if covered_end < start {
                     let default_attrs = attrs_list.defaults();
                     if default_attrs.text_decoration.has_decoration() {
-                        decorations.push((
-                            covered_end..span_range.end,
+                        out.push((
+                            covered_end..start,
                             GlyphDecorationData {
                                 text_decoration: default_attrs.text_decoration,
                                 underline_metrics: ul_metrics,
@@ -1212,10 +1196,40 @@ impl ShapeSpan {
                         ));
                     }
                 }
+                covered_end = end;
+
+                let attrs = attr_owned.as_attrs();
+                if attrs.text_decoration.has_decoration() {
+                    out.push((
+                        start..end,
+                        GlyphDecorationData {
+                            text_decoration: attrs.text_decoration,
+                            underline_metrics: ul_metrics,
+                            strikethrough_metrics: st_metrics,
+                            ascent,
+                        },
+                    ));
+                }
+            }
+
+            // Check trailing gap (covered by defaults)
+            if covered_end < span_range.end {
+                let default_attrs = attrs_list.defaults();
+                if default_attrs.text_decoration.has_decoration() {
+                    out.push((
+                        covered_end..span_range.end,
+                        GlyphDecorationData {
+                            text_decoration: default_attrs.text_decoration,
+                            underline_metrics: ul_metrics,
+                            strikethrough_metrics: st_metrics,
+                            ascent,
+                        },
+                    ));
+                }
             }
         }
 
-        decorations
+        start..out.len()
     }
 }
 
@@ -1614,7 +1628,6 @@ impl ShapeLine {
             &mut lines,
             match_mono_width,
             hinting,
-            &[],
         );
         lines
     }
@@ -2309,6 +2322,25 @@ impl ShapeLine {
         }
     }
 
+    /// Resolve the decoration spans of all shape spans into the reusable
+    /// scratch buffer of `font_system`, ready to be consumed by
+    /// `layout_to_buffer`.
+    pub(crate) fn fill_span_decorations(
+        &self,
+        attrs_list: &AttrsList,
+        font_system: &mut FontSystem,
+    ) {
+        font_system.shape_buffer.span_decoration_data.clear();
+        font_system.shape_buffer.span_decoration_offsets.clear();
+        for span in &self.spans {
+            let span_range = span.decorations_into(attrs_list, font_system);
+            font_system
+                .shape_buffer
+                .span_decoration_offsets
+                .push(span_range);
+        }
+    }
+
     pub fn layout_to_buffer(
         &self,
         scratch: &mut ShapeBuffer,
@@ -2320,7 +2352,6 @@ impl ShapeLine {
         layout_lines: &mut Vec<LayoutLine>,
         match_mono_width: Option<f32>,
         hinting: Hinting,
-        span_decorations: &[Vec<(Range<usize>, GlyphDecorationData)>],
     ) {
         // For each visual line a list of  (span index,  and range of words in that span)
         // Note that a BiDi visual line could have multiple spans or parts of them
@@ -2888,7 +2919,12 @@ impl ShapeLine {
                     let deco_spans: &[(Range<usize>, GlyphDecorationData)] = if is_ellipsis {
                         &[]
                     } else {
-                        span_decorations.get(r.span).map_or(&[][..], Vec::as_slice)
+                        scratch
+                            .span_decoration_offsets
+                            .get(r.span)
+                            .map_or(&[][..], |range| {
+                                &scratch.span_decoration_data[range.start..range.end]
+                            })
                     };
                     // Cursor into deco_spans — advances forward as glyphs are
                     // emitted in byte order, giving amortized O(1) lookup.
