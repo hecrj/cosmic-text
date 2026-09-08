@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `SpanPadding` type and `Attrs::padding` builder (cherry-picked from upstream pop-os/cosmic-text@b4bd58ac)
 
+### Changed
+
+- Plug `SpanPadding` into shape/layout calculations: horizontal (`start`/`end`) padding is attributed to words, included in word widths (so wrapping and ellipsization account for it) and placed at the word's BiDi-aware x-stream edges; `top`/`bottom` padding inflates the line's `max_ascent`/`max_descent`
+
 ## [0.19.0] - 2026-04-22
 
 ### Fixed
