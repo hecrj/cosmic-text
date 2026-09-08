@@ -20,8 +20,6 @@
 //!   RTL line).
 //! - Across a wrap, each padding boundary is emitted on the visual line that
 //!   contains the glyph after which it is placed.
-//! - `top`/`bottom` padding inflates the containing glyph's contribution to
-//!   the line's `max_ascent`/`max_descent`.
 
 use cosmic_text::{
     fontdb, Align, Attrs, Buffer, Direction, Ellipsize, FontSystem, Metrics, Shaping, SpanPadding,
@@ -188,7 +186,7 @@ fn ltr_start_end_padding_widens_line() {
         Direction::Auto,
     );
     let pad = layout_parts(
-        &[(text, SpanPadding::new(0.0, 0.0, 5.0, 7.0))],
+        &[(text, SpanPadding::new(5.0, 7.0))],
         Wrap::None,
         Some(500.0),
         Direction::Auto,
@@ -209,58 +207,6 @@ fn ltr_start_end_padding_widens_line() {
 }
 
 #[test]
-fn ltr_top_bottom_padding_inflates_line_height() {
-    let text = "hi";
-    let base = layout_parts(
-        &[(text, SpanPadding::ZERO)],
-        Wrap::None,
-        Some(500.0),
-        Direction::Auto,
-    );
-    let pad = layout_parts(
-        &[(text, SpanPadding::new(2.0, 3.0, 0.0, 0.0))],
-        Wrap::None,
-        Some(500.0),
-        Direction::Auto,
-    );
-    assert_eq!(pad.len(), 1);
-    assert_close(pad[0].w, base[0].w, "line width");
-    assert_close(pad[0].max_ascent, base[0].max_ascent + 2.0, "max ascent");
-    assert_close(pad[0].max_descent, base[0].max_descent + 3.0, "max descent");
-}
-
-#[test]
-fn top_padding_of_partial_span_inflates_line_height() {
-    // "b a": only the "a" gets top padding. With the bundled Inter font both
-    // lowercase glyphs report the same ascent (the font's ascender), which is
-    // also the baseline line's max ascent — so the padded line's ascent is
-    // exactly baseline + 50, proving the padding was attributed to the
-    // spanned glyph (not the whole line).
-    let base = layout_parts(
-        &[("b a", SpanPadding::ZERO)],
-        Wrap::None,
-        Some(500.0),
-        Direction::Auto,
-    );
-    let pad = layout_parts(
-        &[
-            ("b ", SpanPadding::ZERO),
-            ("a", SpanPadding::new(50.0, 0.0, 0.0, 0.0)),
-        ],
-        Wrap::None,
-        Some(500.0),
-        Direction::Auto,
-    );
-    assert!(
-        pad[0].max_ascent > base[0].max_ascent,
-        "ascent should inflate"
-    );
-    assert_close(pad[0].max_ascent, base[0].max_ascent + 50.0, "max ascent");
-    // No bottom padding.
-    assert_close(pad[0].max_descent, base[0].max_descent, "max descent");
-}
-
-#[test]
 fn rtl_start_end_padding_sides() {
     // "שלום" — auto-detected RTL line.
     let text = "שלום";
@@ -271,7 +217,7 @@ fn rtl_start_end_padding_sides() {
         Direction::Auto,
     );
     let pad = layout_parts(
-        &[(text, SpanPadding::new(0.0, 0.0, 5.0, 7.0))],
+        &[(text, SpanPadding::new(5.0, 7.0))],
         Wrap::None,
         Some(500.0),
         Direction::Auto,
@@ -304,7 +250,7 @@ fn padded_word_shifts_following_content() {
     let pad = layout_parts(
         &[
             ("aa ", SpanPadding::ZERO),
-            ("bb", SpanPadding::new(0.0, 0.0, 2.0, 4.0)),
+            ("bb", SpanPadding::new(2.0, 4.0)),
             (" cc", SpanPadding::ZERO),
         ],
         Wrap::None,
@@ -342,7 +288,7 @@ fn padding_can_force_an_extra_wrap() {
     let pad = layout_parts(
         &[
             ("aa ", SpanPadding::ZERO),
-            ("bb", SpanPadding::new(0.0, 0.0, 5.0, 5.0)),
+            ("bb", SpanPadding::new(5.0, 5.0)),
             (" cc dd", SpanPadding::ZERO),
         ],
         Wrap::Word,
@@ -380,7 +326,7 @@ fn word_wrap_keeps_padding_with_its_line() {
     );
     let pad = layout_parts(
         &[
-            ("world foo", SpanPadding::new(0.0, 0.0, 3.0, 4.0)),
+            ("world foo", SpanPadding::new(3.0, 4.0)),
             (" bar", SpanPadding::ZERO),
         ],
         Wrap::Word,
@@ -421,7 +367,7 @@ fn glyph_wrap_distributes_padding_over_lines() {
         Direction::Auto,
     );
     let pad = layout_parts(
-        &[("hello", SpanPadding::new(0.0, 0.0, 5.0, 5.0))],
+        &[("hello", SpanPadding::new(5.0, 5.0))],
         Wrap::Glyph,
         Some(20.0),
         Direction::Auto,
@@ -457,8 +403,8 @@ fn word_or_glyph_wrap_includes_padding_in_word_width() {
     );
     let pad = layout_parts(
         &[
-            ("hello ", SpanPadding::new(0.0, 0.0, 2.0, 0.0)),
-            ("world", SpanPadding::new(0.0, 0.0, 0.0, 3.0)),
+            ("hello ", SpanPadding::new(2.0, 0.0)),
+            ("world", SpanPadding::new(0.0, 3.0)),
         ],
         Wrap::WordOrGlyph,
         Some(45.0),
@@ -485,7 +431,7 @@ fn rtl_line_with_ltr_run_padding() {
     let pad = layout_parts(
         &[
             ("بب ", SpanPadding::ZERO),
-            ("aa", SpanPadding::new(0.0, 0.0, 4.0, 6.0)),
+            ("aa", SpanPadding::new(4.0, 6.0)),
             (" جج", SpanPadding::ZERO),
         ],
         Wrap::None,
@@ -542,7 +488,7 @@ fn ltr_line_with_rtl_word_padding() {
     let pad = layout_parts(
         &[
             ("hi ", SpanPadding::ZERO),
-            ("שלום", SpanPadding::new(0.0, 0.0, 4.0, 6.0)),
+            ("שלום", SpanPadding::new(4.0, 6.0)),
             (" bye", SpanPadding::ZERO),
         ],
         Wrap::None,
@@ -596,7 +542,7 @@ fn rtl_word_wrap_padding_sides() {
         Direction::Auto,
     );
     let pad = layout_parts(
-        &[(text, SpanPadding::new(0.0, 0.0, 5.0, 5.0))],
+        &[(text, SpanPadding::new(5.0, 5.0))],
         Wrap::Word,
         Some(60.0),
         Direction::Auto,
@@ -624,7 +570,7 @@ fn defaults_padding_applies_to_whole_line() {
     let base = layout_defaults(text, &Attrs::new(), Wrap::None, Some(500.0));
     let pad = layout_defaults(
         text,
-        &Attrs::new().padding(SpanPadding::new(0.0, 0.0, 5.0, 5.0)),
+        &Attrs::new().padding(SpanPadding::new(5.0, 5.0)),
         Wrap::None,
         Some(500.0),
     );
@@ -645,8 +591,8 @@ fn zero_padding_is_a_noop() {
     );
     let pad = layout_parts(
         &[
-            ("hello ", SpanPadding::new(0.0, 0.0, 0.0, 0.0)),
-            ("world", SpanPadding::new(0.0, 0.0, 0.0, 0.0)),
+            ("hello ", SpanPadding::new(0.0, 0.0)),
+            ("world", SpanPadding::new(0.0, 0.0)),
         ],
         Wrap::Word,
         Some(50.0),
@@ -669,7 +615,7 @@ fn zero_padding_is_a_noop() {
 fn centered_alignment_includes_padding() {
     // "hello" padded 5+7, centered in 100px: the centering uses the padded
     // line width, and the paddings sit at the padded line's edges.
-    let pad = layout_centered(&[("hello", SpanPadding::new(0.0, 0.0, 5.0, 7.0))], 100.0);
+    let pad = layout_centered(&[("hello", SpanPadding::new(5.0, 7.0))], 100.0);
     assert_eq!(pad.len(), 1);
     let line = &pad[0];
     let inset = (100.0 - line.w) / 2.0;
@@ -691,7 +637,7 @@ fn ellipsize_with_padding_smoke() {
     let lines = layout_ellipsized(
         &[
             ("hello ", SpanPadding::ZERO),
-            ("world", SpanPadding::new(0.0, 0.0, 3.0, 3.0)),
+            ("world", SpanPadding::new(3.0, 3.0)),
         ],
         40.0,
     );
@@ -719,7 +665,7 @@ fn mid_word_padding_is_placed_between_glyphs() {
     );
     let pad = layout_parts(
         &[
-            ("he", SpanPadding::new(0.0, 0.0, 2.0, 3.0)),
+            ("he", SpanPadding::new(2.0, 3.0)),
             ("llo", SpanPadding::ZERO),
         ],
         Wrap::None,
@@ -760,7 +706,7 @@ fn mid_word_padding_incongruent_rtl_word() {
     let pad = layout_parts(
         &[
             ("hi ", SpanPadding::ZERO),
-            ("של", SpanPadding::new(0.0, 0.0, 4.0, 3.0)),
+            ("של", SpanPadding::new(4.0, 3.0)),
             ("ום bye", SpanPadding::ZERO),
         ],
         Wrap::None,

@@ -3188,18 +3188,7 @@ impl ShapeLine {
                     // Cursor into deco_spans — advances forward as glyphs are
                     // emitted in byte order, giving amortized O(1) lookup.
                     let mut deco_cursor: usize = 0;
-                    // Cursors into padding_spans for top/bottom padding lookup.
-                    // The forward cursor is used when the emitted glyph byte
-                    // offsets ascend (congruent spans), the backward cursor
-                    // when they descend (incongruent spans).
-                    let pad_spans: &[(Range<usize>, SpanPadding)] = if is_ellipsis {
-                        &[]
-                    } else {
-                        &self.spans[r.span].padding_spans
-                    };
                     let congruent = is_ellipsis || self.rtl == r.level.is_rtl();
-                    let mut pad_cursor = 0usize;
-                    let mut pad_cursor_desc = pad_spans.len();
                     // If ending_glyph is not 0 we need to include glyphs from the ending_word
                     for i in r.start.word..r.end.word + usize::from(r.end.glyph != 0) {
                         let word = &span_words[i];
@@ -3349,44 +3338,8 @@ impl ShapeLine {
                                 *x += x_advance;
                             }
                             *y += y_advance;
-                            // `SpanPadding`'s top/bottom inflate this glyph's
-                            // contribution to the line's ascent/descent.
-                            let (top_pad, bottom_pad) = if pad_spans.is_empty() {
-                                (0.0, 0.0)
-                            } else if congruent {
-                                // Byte offsets ascend in stream order.
-                                while pad_cursor < pad_spans.len()
-                                    && pad_spans[pad_cursor].0.end <= glyph.start
-                                {
-                                    pad_cursor += 1;
-                                }
-                                match pad_spans.get(pad_cursor) {
-                                    Some((range, padding)) if range.start <= glyph.start => {
-                                        (padding.top, padding.bottom)
-                                    }
-                                    _ => (0.0, 0.0),
-                                }
-                            } else {
-                                // Byte offsets descend in stream order.
-                                while pad_cursor_desc > 0
-                                    && pad_spans[pad_cursor_desc - 1].0.start > glyph.start
-                                {
-                                    pad_cursor_desc -= 1;
-                                }
-                                if pad_cursor_desc > 0 {
-                                    let (range, padding) = &pad_spans[pad_cursor_desc - 1];
-                                    if range.start <= glyph.start && glyph.start < range.end {
-                                        (padding.top, padding.bottom)
-                                    } else {
-                                        (0.0, 0.0)
-                                    }
-                                } else {
-                                    (0.0, 0.0)
-                                }
-                            };
-                            *max_ascent = max_ascent.max(glyph_font_size * glyph.ascent + top_pad);
-                            *max_descent =
-                                max_descent.max(glyph_font_size * glyph.descent + bottom_pad);
+                            *max_ascent = max_ascent.max(glyph_font_size * glyph.ascent);
+                            *max_descent = max_descent.max(glyph_font_size * glyph.descent);
 
                             // Queue the padding boundaries that fall after
                             // this glyph so they are emitted (before the next
