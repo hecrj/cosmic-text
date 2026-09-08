@@ -192,6 +192,122 @@ impl FontFeatures {
     }
 }
 
+/// Padding around a span's content, in pixels.
+///
+/// Uses logical directions (`start`/`end`) so layout can resolve them
+/// according to the span's `BiDi` direction.
+#[derive(Clone, Copy, Debug)]
+pub struct SpanPadding {
+    pub top: f32,
+    pub bottom: f32,
+    pub start: f32,
+    pub end: f32,
+}
+
+impl SpanPadding {
+    /// Zero padding on all sides.
+    pub const ZERO: Self = Self {
+        top: 0.0,
+        bottom: 0.0,
+        start: 0.0,
+        end: 0.0,
+    };
+
+    /// Create padding with explicit values for each side.
+    pub const fn new(top: f32, bottom: f32, start: f32, end: f32) -> Self {
+        Self {
+            top,
+            bottom,
+            start,
+            end,
+        }
+    }
+
+    /// Create padding with the same value on all four sides.
+    pub const fn uniform(px: f32) -> Self {
+        Self {
+            top: px,
+            bottom: px,
+            start: px,
+            end: px,
+        }
+    }
+
+    /// Create padding with one value for top/bottom and another for start/end.
+    pub const fn symmetric(vertical: f32, horizontal: f32) -> Self {
+        Self {
+            top: vertical,
+            bottom: vertical,
+            start: horizontal,
+            end: horizontal,
+        }
+    }
+
+    /// Top padding in pixels.
+    pub const fn top(&self) -> f32 {
+        self.top
+    }
+
+    /// Bottom padding in pixels.
+    pub const fn bottom(&self) -> f32 {
+        self.bottom
+    }
+
+    /// Start (inline-start) padding in pixels.
+    pub const fn start(&self) -> f32 {
+        self.start
+    }
+
+    /// End (inline-end) padding in pixels.
+    pub const fn end(&self) -> f32 {
+        self.end
+    }
+}
+
+impl PartialEq for SpanPadding {
+    fn eq(&self, other: &Self) -> bool {
+        fn nan_eq(a: f32, b: f32) -> bool {
+            if a.is_nan() {
+                b.is_nan()
+            } else {
+                a == b
+            }
+        }
+        nan_eq(self.top, other.top)
+            && nan_eq(self.bottom, other.bottom)
+            && nan_eq(self.start, other.start)
+            && nan_eq(self.end, other.end)
+    }
+}
+
+impl Eq for SpanPadding {}
+
+impl Hash for SpanPadding {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        const CANONICAL_NAN_BITS: u32 = 0x7fc0_0000;
+
+        fn canonical_bits(v: f32) -> u32 {
+            if v.is_nan() {
+                CANONICAL_NAN_BITS
+            } else {
+                // Add +0.0 to canonicalize -0.0 to +0.0
+                (v + 0.0).to_bits()
+            }
+        }
+
+        canonical_bits(self.top).hash(hasher);
+        canonical_bits(self.bottom).hash(hasher);
+        canonical_bits(self.start).hash(hasher);
+        canonical_bits(self.end).hash(hasher);
+    }
+}
+
+impl Default for SpanPadding {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 /// A wrapper for letter spacing to get around that f32 doesn't implement Eq and Hash
 #[derive(Clone, Copy, Debug)]
 pub struct LetterSpacing(pub f32);
@@ -297,6 +413,7 @@ pub struct Attrs<'a> {
     pub letter_spacing_opt: Option<LetterSpacing>,
     pub font_features: FontFeatures,
     pub text_decoration: TextDecoration,
+    pub padding: SpanPadding,
 }
 
 impl<'a> Attrs<'a> {
@@ -316,6 +433,7 @@ impl<'a> Attrs<'a> {
             letter_spacing_opt: None,
             font_features: FontFeatures::new(),
             text_decoration: TextDecoration::new(),
+            padding: SpanPadding::ZERO,
         }
     }
 
@@ -376,6 +494,12 @@ impl<'a> Attrs<'a> {
     /// Set [`FontFeatures`]
     pub fn font_features(mut self, font_features: FontFeatures) -> Self {
         self.font_features = font_features;
+        self
+    }
+
+    /// Set [`SpanPadding`]
+    pub const fn padding(mut self, padding: SpanPadding) -> Self {
+        self.padding = padding;
         self
     }
 
@@ -454,6 +578,7 @@ pub struct AttrsOwned {
     pub letter_spacing_opt: Option<LetterSpacing>,
     pub font_features: FontFeatures,
     pub text_decoration: TextDecoration,
+    pub padding: SpanPadding,
 }
 
 impl AttrsOwned {
@@ -470,6 +595,7 @@ impl AttrsOwned {
             letter_spacing_opt: attrs.letter_spacing_opt,
             font_features: attrs.font_features.clone(),
             text_decoration: attrs.text_decoration,
+            padding: attrs.padding,
         }
     }
 
@@ -486,6 +612,7 @@ impl AttrsOwned {
             letter_spacing_opt: self.letter_spacing_opt,
             font_features: self.font_features.clone(),
             text_decoration: self.text_decoration,
+            padding: self.padding,
         }
     }
 }
