@@ -117,10 +117,29 @@ pub struct LayoutLine {
     pub max_descent: f32,
     /// Maximum line height of any spans in line
     pub line_height_opt: Option<f32>,
+    /// Top [`crate::SpanPadding`] (in pixels) applied to this line. It extends
+    /// the line's height above the glyphs and offsets their baseline down.
+    pub top_pad: f32,
+    /// Bottom [`crate::SpanPadding`] (in pixels) applied to this line. It
+    /// extends the line's height below the glyphs.
+    pub bottom_pad: f32,
     /// Glyphs in line
     pub glyphs: Vec<LayoutGlyph>,
     /// Text decoration spans covering ranges of glyphs
     pub decorations: Vec<DecorationSpan>,
+}
+
+impl LayoutLine {
+    /// Height of the line (in pixels), including vertical
+    /// [`crate::SpanPadding`].
+    ///
+    /// This is the line height provided by a span's metrics (if any) or
+    /// `default` (the buffer's line height) plus [`Self::top_pad`] and
+    /// [`Self::bottom_pad`], the same way horizontal padding is included in
+    /// [`Self::w`].
+    pub fn line_height(&self, default: f32) -> f32 {
+        self.line_height_opt.unwrap_or(default) + self.top_pad + self.bottom_pad
+    }
 }
 
 /// Wrapping mode

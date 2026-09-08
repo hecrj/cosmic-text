@@ -20,8 +20,12 @@
 //!   RTL line).
 //! - Across a wrap, each padding boundary is emitted on the visual line that
 //!   contains the glyph after which it is placed.
-//! - `top`/`bottom` padding inflates the containing glyph's contribution to
-//!   the line's `max_ascent`/`max_descent`.
+//! - `top`/`bottom` padding extends the visual line's height (it is stored
+//!   on the `LayoutLine` and included in every line-height computation), the
+//!   same way horizontal padding extends the line's width; it does *not*
+//!   touch `max_ascent`/`max_descent`. Glyphs are placed below the top
+//!   padding, centered in the unpadded part of the line box — the vertical
+//!   analogue of horizontal start padding offsetting the first glyph.
 
 use cosmic_text::{
     fontdb, Align, Attrs, Buffer, Direction, Ellipsize, FontSystem, Metrics, Shaping, SpanPadding,
@@ -54,6 +58,9 @@ struct Line {
     w: f32,
     max_ascent: f32,
     max_descent: f32,
+    line_height_opt: Option<f32>,
+    top_pad: f32,
+    bottom_pad: f32,
     glyphs: Vec<Glyph>,
 }
 
@@ -62,6 +69,9 @@ fn line_from(line: &cosmic_text::LayoutLine) -> Line {
         w: line.w,
         max_ascent: line.max_ascent,
         max_descent: line.max_descent,
+        line_height_opt: line.line_height_opt,
+        top_pad: line.top_pad,
+        bottom_pad: line.bottom_pad,
         glyphs: line
             .glyphs
             .iter()
@@ -161,12 +171,49 @@ fn layout_ellipsized(parts: &[(&str, SpanPadding)], width: f32) -> Vec<Line> {
         .collect()
 }
 
+/// Lays out with word wrapping and the given ellipsization mode.
+fn layout_ellipsized_wrapped(parts: &[(&str, SpanPadding)], ellipsize: Ellipsize) -> Vec<Line> {
+    let mut font_system = font_system();
+    let mut buffer = Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, FONT_SIZE * 1.4));
+    buffer.set_wrap(Wrap::Word);
+    buffer.set_ellipsize(ellipsize);
+    let defaults = Attrs::new();
+    let spans: Vec<(&str, Attrs)> = parts
+        .iter()
+        .map(|(text, padding)| (*text, defaults.clone().padding(*padding)))
+        .collect();
+    buffer.set_rich_text(spans, &defaults, Shaping::Advanced, None);
+    let mut buffer = buffer.borrow_with(&mut font_system);
+    buffer.set_size(Some(22.0), None);
+    buffer
+        .line_layout(0)
+        .expect("expected at least one line")
+        .iter()
+        .map(line_from)
+        .collect()
+}
+
 fn assert_close(a: f32, b: f32, msg: &str) {
     assert!(
         (a - b).abs() < EPS,
         "{msg}: expected {b}, got {a} (diff {})",
         (a - b).abs()
     );
+}
+
+/// Lays out `text` with the given padding in the default `Attrs` and returns
+/// the first layout run's `(line_top, line_y, line_height)` — the values
+/// rendering, scrolling and hit-testing consume.
+fn first_run_metrics(text: &str, padding: SpanPadding) -> (f32, f32, f32) {
+    let mut font_system = font_system();
+    let mut buffer = Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, FONT_SIZE * 1.4));
+    buffer.set_wrap(Wrap::None);
+    let attrs = Attrs::new().padding(padding);
+    buffer.set_text(text, &attrs, Shaping::Advanced, None);
+    let mut buffer = buffer.borrow_with(&mut font_system);
+    buffer.set_size(Some(500.0), None);
+    let run = buffer.layout_runs().next().expect("expected a layout run");
+    (run.line_top, run.line_y, run.line_height)
 }
 
 /// Finds the baseline glyph for the same byte offset.
@@ -225,17 +272,27 @@ fn ltr_top_bottom_padding_inflates_line_height() {
     );
     assert_eq!(pad.len(), 1);
     assert_close(pad[0].w, base[0].w, "line width");
-    assert_close(pad[0].max_ascent, base[0].max_ascent + 2.0, "max ascent");
-    assert_close(pad[0].max_descent, base[0].max_descent + 3.0, "max descent");
+    // Vertical padding extends the line's height (stored on the
+    // `LayoutLine`, added to every line-height computation); it does not
+    // touch the glyphs' metrics or the span's line-height override.
+    assert_eq!(
+        pad[0].line_height_opt, base[0].line_height_opt,
+        "line height opt"
+    );
+    assert_close(pad[0].max_ascent, base[0].max_ascent, "max ascent");
+    assert_close(pad[0].max_descent, base[0].max_descent, "max descent");
+    assert_close(pad[0].top_pad, 2.0, "top pad");
+    assert_close(pad[0].bottom_pad, 3.0, "bottom pad");
 }
 
 #[test]
 fn top_padding_of_partial_span_inflates_line_height() {
     // "b a": only the "a" gets top padding. With the bundled Inter font both
     // lowercase glyphs report the same ascent (the font's ascender), which is
-    // also the baseline line's max ascent — so the padded line's ascent is
-    // exactly baseline + 50, proving the padding was attributed to the
-    // spanned glyph (not the whole line).
+    // also the baseline line's max ascent — the padded line's ascent is
+    // therefore exactly the baseline's, and the whole padding is visible on
+    // the line's stored top pad, proving the padding was attributed to the
+    // spanned content (not the glyph metrics).
     let base = layout_parts(
         &[("b a", SpanPadding::ZERO)],
         Wrap::None,
@@ -251,13 +308,129 @@ fn top_padding_of_partial_span_inflates_line_height() {
         Some(500.0),
         Direction::Auto,
     );
-    assert!(
-        pad[0].max_ascent > base[0].max_ascent,
-        "ascent should inflate"
-    );
-    assert_close(pad[0].max_ascent, base[0].max_ascent + 50.0, "max ascent");
-    // No bottom padding.
+    assert_close(pad[0].max_ascent, base[0].max_ascent, "max ascent");
     assert_close(pad[0].max_descent, base[0].max_descent, "max descent");
+    assert_close(pad[0].top_pad, 50.0, "top pad");
+    assert_close(pad[0].bottom_pad, 0.0, "bottom pad");
+    // The baseline line has no padding.
+    assert_close(base[0].top_pad, 0.0, "baseline top pad");
+    assert_close(base[0].bottom_pad, 0.0, "baseline bottom pad");
+}
+
+#[test]
+fn top_bottom_padding_grows_line_box_and_shifts_baseline() {
+    // Through the layout runs (what rendering/scrolling/hit-testing consume):
+    // the line box grows by top + bottom padding, and the baseline shifts
+    // down by exactly the top padding — glyphs sit below the top padding,
+    // centered in the remaining (unpadded) height, the vertical analogue of
+    // horizontal start padding offsetting the first glyph. The bottom
+    // padding only extends the box below the glyphs.
+    let (base_top, base_y, base_h) = first_run_metrics("hi", SpanPadding::ZERO);
+    let (pad_top, pad_y, pad_h) = first_run_metrics("hi", SpanPadding::new(2.0, 3.0, 0.0, 0.0));
+    assert_close(pad_h, base_h + 5.0, "line height");
+    assert_close(pad_top, base_top, "line top");
+    assert_close(pad_y, base_y + 2.0, "baseline");
+
+    let (_, top_y, top_h) = first_run_metrics("hi", SpanPadding::new(2.0, 0.0, 0.0, 0.0));
+    assert_close(top_h, base_h + 2.0, "line height (top only)");
+    assert_close(top_y, base_y + 2.0, "baseline (top only)");
+
+    let (_, bottom_y, bottom_h) = first_run_metrics("hi", SpanPadding::new(0.0, 3.0, 0.0, 0.0));
+    assert_close(bottom_h, base_h + 3.0, "line height (bottom only)");
+    assert_close(bottom_y, base_y, "baseline (bottom only)");
+}
+
+#[test]
+fn vertical_padding_stacks_subsequent_lines() {
+    // "aa\nbb": only line 0 is padded (top 2 / bottom 3). Line 1's box must
+    // start where line 0's padded box ends — 5px lower than the unpadded
+    // layout — while line 1 itself stays unpadded.
+    let runs = |parts: &[(&str, SpanPadding)]| {
+        let mut font_system = font_system();
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, FONT_SIZE * 1.4));
+        buffer.set_wrap(Wrap::None);
+        let defaults = Attrs::new();
+        let texts: Vec<String> = parts
+            .iter()
+            .enumerate()
+            .map(|(i, (text, _))| {
+                if i == 0 {
+                    text.to_string()
+                } else {
+                    format!("\n{text}")
+                }
+            })
+            .collect();
+        let spans: Vec<(&str, Attrs)> = parts
+            .iter()
+            .zip(&texts)
+            .map(|((_, padding), text)| (text.as_str(), defaults.clone().padding(*padding)))
+            .collect();
+        buffer.set_rich_text(
+            spans.iter().map(|(t, a)| (*t, a.clone())),
+            &defaults,
+            Shaping::Advanced,
+            None,
+        );
+        let mut buffer = buffer.borrow_with(&mut font_system);
+        buffer.set_size(Some(500.0), None);
+        buffer
+            .layout_runs()
+            .map(|run| (run.line_top, run.line_y, run.line_height))
+            .collect::<Vec<_>>()
+    };
+
+    let base = runs(&[("aa", SpanPadding::ZERO), ("bb", SpanPadding::ZERO)]);
+    let pad = runs(&[
+        ("aa", SpanPadding::new(2.0, 3.0, 0.0, 0.0)),
+        ("bb", SpanPadding::ZERO),
+    ]);
+    assert_eq!(base.len(), 2);
+    assert_eq!(pad.len(), 2);
+    // Line 0's box grows by 5; its baseline shifts down by the top pad.
+    assert_close(pad[0].2, base[0].2 + 5.0, "line 0 height");
+    assert_close(pad[0].1, base[0].1 + 2.0, "line 0 baseline");
+    // Line 1 starts 5px lower, with its own (unpadded) height and baseline
+    // relative to its top.
+    assert_close(pad[1].0, base[1].0 + 5.0, "line 1 top");
+    assert_close(pad[1].2, base[1].2, "line 1 height");
+    assert_close(
+        pad[1].1 - pad[1].0,
+        base[1].1 - base[1].0,
+        "line 1 baseline offset",
+    );
+}
+
+#[test]
+fn ellipsize_height_limit_accounts_for_padding() {
+    // "aa bb cc" wraps one word per line at width 22 (three lines). The
+    // ellipsization height limit is tall enough for three *unpadded* lines,
+    // so the unpadded text fits without ellipsizing. With top padding on
+    // every line the committed lines are taller, the limit is exceeded after
+    // the first line, and the remainder is ellipsized — the same way the
+    // width-based limits account for horizontal padding.
+    let ellipsize = Ellipsize::End(cosmic_text::EllipsizeHeightLimit::Height(58.0));
+    let base = layout_ellipsized_wrapped(&[("aa bb cc", SpanPadding::ZERO)], ellipsize);
+    let pad = layout_ellipsized_wrapped(
+        &[("aa bb cc", SpanPadding::new(20.0, 0.0, 0.0, 0.0))],
+        ellipsize,
+    );
+    // The limit check estimates line heights from the font size (14.0) plus
+    // the committed line's vertical padding: unpadded commits are 14.0 each
+    // (3 lines: 14 + 28 = 42 and 28 + 28 = 56, both ≤ 58), padded commits
+    // are 34.0 (34 + 28 = 62 > 58 after the first line).
+    assert_eq!(base.len(), 3, "unpadded should be 3 lines");
+    assert!(
+        !base
+            .iter()
+            .any(|l| l.glyphs.iter().any(|g| g.start == g.end)),
+        "unpadded should not ellipsize"
+    );
+    assert_eq!(pad.len(), 2, "padded should be 2 lines");
+    assert!(
+        pad[1].glyphs.iter().any(|g| g.start == g.end),
+        "padded remainder should be ellipsized"
+    );
 }
 
 #[test]
@@ -657,6 +830,8 @@ fn zero_padding_is_a_noop() {
         assert_close(p.w, b.w, "line width");
         assert_close(p.max_ascent, b.max_ascent, "max ascent");
         assert_close(p.max_descent, b.max_descent, "max descent");
+        assert_close(p.top_pad, b.top_pad, "top pad");
+        assert_close(p.bottom_pad, b.bottom_pad, "bottom pad");
         assert_eq!(p.glyphs.len(), b.glyphs.len());
         for (bg, pg) in b.glyphs.iter().zip(p.glyphs.iter()) {
             assert_close(pg.x, bg.x, "glyph x");

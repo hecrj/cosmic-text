@@ -194,8 +194,14 @@ impl FontFeatures {
 
 /// Padding around a span's content, in pixels.
 ///
-/// Uses logical directions (`start`/`end`) so layout can resolve them
-/// according to the span's `BiDi` direction.
+/// The horizontal sides use logical directions (`start`/`end`) so layout can
+/// resolve them according to the span's `BiDi` direction. They are included
+/// in the line's width the same way the content is.
+///
+/// The `top`/`bottom` sides extend the visual line's height (they are stored
+/// on the laid-out line and added to every line-height computation) without
+/// affecting the glyphs' `max_ascent`/`max_descent`. Glyphs are placed below
+/// the top padding, the same way they are placed after the start padding.
 #[derive(Clone, Copy, Debug)]
 pub struct SpanPadding {
     pub top: f32,

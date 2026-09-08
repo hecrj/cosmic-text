@@ -1011,6 +1011,35 @@ impl ShapeSpan {
         lead + mid + trail
     }
 
+    /// The word's top/bottom `SpanPadding` (in pixels), as `(top, bottom)`:
+    /// the max top/bottom padding over the attr sub-ranges intersecting the
+    /// word's byte range. Contributed to the visual line's line height the
+    /// same way [`Self::word_pad`] is contributed to its width.
+    fn word_vpad(&self, word_idx: usize) -> (f32, f32) {
+        if self.padding_spans.is_empty() {
+            return (0.0, 0.0);
+        }
+        let Some(word) = self.words.get(word_idx) else {
+            return (0.0, 0.0);
+        };
+        let (Some(first), Some(last)) = (word.glyphs.first(), word.glyphs.last()) else {
+            return (0.0, 0.0);
+        };
+        let ws = first.start.min(last.start);
+        let we = first.end.max(last.end);
+        let mut top: f32 = 0.0;
+        let mut bottom: f32 = 0.0;
+        for (range, padding) in &self.padding_spans {
+            // Sub-ranges that don't overlap the word's byte range contain no
+            // glyph of the word.
+            if range.start < we && range.end > ws {
+                top = top.max(padding.top);
+                bottom = bottom.max(padding.bottom);
+            }
+        }
+        (top, bottom)
+    }
+
     /// The word's horizontal padding boundaries as `(after_idx, px)` pairs
     /// for layout: `after_idx` is the index of the word's glyph (in stored,
     /// i.e. x-stream, order) *after which* the boundary's padding is
@@ -2328,6 +2357,44 @@ impl ShapeLine {
         }
     }
 
+    /// The top/bottom `SpanPadding` (in pixels), as `(top, bottom)`, applied
+    /// to this visual line: the max over the line's words of
+    /// [`ShapeSpan::word_vpad`]. Added to the line's height for ellipsization
+    /// height-limit accounting, the same way horizontal padding is included
+    /// in the line's width.
+    fn visual_line_vpad(&self, vl: &VisualLine) -> (f32, f32) {
+        let mut top: f32 = 0.0;
+        let mut bottom: f32 = 0.0;
+        for r in &vl.ranges {
+            if r.span == ELLIPSIS_SPAN || self.spans[r.span].padding_spans.is_empty() {
+                continue;
+            }
+            let span = &self.spans[r.span];
+            let end_word = r.end.word + usize::from(r.end.glyph != 0);
+            for word_idx in r.start.word..end_word {
+                let (t, b) = span.word_vpad(word_idx);
+                top = top.max(t);
+                bottom = bottom.max(b);
+            }
+        }
+        (top, bottom)
+    }
+
+    /// The height (in pixels) to account for in ellipsization height-limit
+    /// calculations when the last-pushed visual line is committed:
+    /// `line_height` plus that line's vertical `SpanPadding`, the same way
+    /// horizontal padding is included in the widths used for the width-based
+    /// limits.
+    fn committed_line_height(&self, visual_lines: &[VisualLine], line_height: f32) -> f32 {
+        match visual_lines.last() {
+            Some(vl) => {
+                let (top, bottom) = self.visual_line_vpad(vl);
+                line_height + top + bottom
+            }
+            None => line_height,
+        }
+    }
+
     /// Returns the words for a given span index, handling the ellipsis sentinel.
     fn get_span_words(&self, span_index: usize) -> &[ShapeWord] {
         if span_index == ELLIPSIS_SPAN {
@@ -2683,7 +2750,8 @@ impl ShapeLine {
 
                                     fitting_start = WordGlyphPos::new(i, 0);
                                     total_line_count += 1;
-                                    total_line_height += line_height;
+                                    total_line_height +=
+                                        self.committed_line_height(&visual_lines, line_height);
                                     if try_ellipsize_last_line(
                                         total_line_count,
                                         total_line_height,
@@ -2731,7 +2799,8 @@ impl ShapeLine {
                                         word_range_width = glyph_width;
                                         fitting_start = WordGlyphPos::new(i, glyph_i + 1);
                                         total_line_count += 1;
-                                        total_line_height += line_height;
+                                        total_line_height +=
+                                            self.committed_line_height(&visual_lines, line_height);
                                         if try_ellipsize_last_line(
                                             total_line_count,
                                             total_line_height,
@@ -2798,7 +2867,8 @@ impl ShapeLine {
                                         cached_visual_lines.pop().unwrap_or_default();
                                     number_of_blanks = 0;
                                     total_line_count += 1;
-                                    total_line_height += line_height;
+                                    total_line_height +=
+                                        self.committed_line_height(&visual_lines, line_height);
 
                                     if try_ellipsize_last_line(
                                         total_line_count,
@@ -2882,7 +2952,8 @@ impl ShapeLine {
 
                                     fitting_start = WordGlyphPos::new(i, 0);
                                     total_line_count += 1;
-                                    total_line_height += line_height;
+                                    total_line_height +=
+                                        self.committed_line_height(&visual_lines, line_height);
                                     if try_ellipsize_last_line(
                                         total_line_count,
                                         total_line_height,
@@ -2930,7 +3001,8 @@ impl ShapeLine {
                                         word_range_width = glyph_width;
                                         fitting_start = WordGlyphPos::new(i, glyph_i);
                                         total_line_count += 1;
-                                        total_line_height += line_height;
+                                        total_line_height +=
+                                            self.committed_line_height(&visual_lines, line_height);
                                         if try_ellipsize_last_line(
                                             total_line_count,
                                             total_line_height,
@@ -2992,7 +3064,8 @@ impl ShapeLine {
                                         cached_visual_lines.pop().unwrap_or_default();
                                     number_of_blanks = 0;
                                     total_line_count += 1;
-                                    total_line_height += line_height;
+                                    total_line_height +=
+                                        self.committed_line_height(&visual_lines, line_height);
                                     if try_ellipsize_last_line(
                                         total_line_count,
                                         total_line_height,
@@ -3070,6 +3143,8 @@ impl ShapeLine {
             let mut y = 0.;
             let mut max_ascent: f32 = 0.;
             let mut max_descent: f32 = 0.;
+            let mut max_top_pad: f32 = 0.;
+            let mut max_bottom_pad: f32 = 0.;
             let alignment_correction = match (align, self.rtl) {
                 (Align::Left, true) => (line_width - visual_line.w).max(0.),
                 (Align::Left, false) => 0.,
@@ -3129,7 +3204,9 @@ impl ShapeLine {
                                  glyphs: &mut Vec<LayoutGlyph>,
                                  decorations: &mut Vec<DecorationSpan>,
                                  max_ascent: &mut f32,
-                                 max_descent: &mut f32| {
+                                 max_descent: &mut f32,
+                                 max_top_pad: &mut f32,
+                                 max_bottom_pad: &mut f32| {
                 for r in visual_line.ranges[range.clone()].iter() {
                     let is_ellipsis = r.span == ELLIPSIS_SPAN;
                     let span_words = self.get_span_words(r.span);
@@ -3302,8 +3379,10 @@ impl ShapeLine {
                                 *x += x_advance;
                             }
                             *y += y_advance;
-                            // `SpanPadding`'s top/bottom inflate this glyph's
-                            // contribution to the line's ascent/descent.
+                            // `SpanPadding`'s top/bottom determine this visual
+                            // line's vertical padding (added to its line
+                            // height, the vertical analogue of how horizontal
+                            // padding extends the line's width).
                             let (top_pad, bottom_pad) = if pad_spans.is_empty() {
                                 (0.0, 0.0)
                             } else if congruent {
@@ -3337,9 +3416,10 @@ impl ShapeLine {
                                     (0.0, 0.0)
                                 }
                             };
-                            *max_ascent = max_ascent.max(glyph_font_size * glyph.ascent + top_pad);
-                            *max_descent =
-                                max_descent.max(glyph_font_size * glyph.descent + bottom_pad);
+                            *max_ascent = max_ascent.max(glyph_font_size * glyph.ascent);
+                            *max_descent = max_descent.max(glyph_font_size * glyph.descent);
+                            *max_top_pad = max_top_pad.max(top_pad);
+                            *max_bottom_pad = max_bottom_pad.max(bottom_pad);
 
                             // Queue the padding boundaries that fall after
                             // this glyph so they are emitted (before the next
@@ -3371,6 +3451,8 @@ impl ShapeLine {
                         &mut decorations,
                         &mut max_ascent,
                         &mut max_descent,
+                        &mut max_top_pad,
+                        &mut max_bottom_pad,
                     );
                 }
             } else {
@@ -3384,6 +3466,8 @@ impl ShapeLine {
                         &mut decorations,
                         &mut max_ascent,
                         &mut max_descent,
+                        &mut max_top_pad,
+                        &mut max_bottom_pad,
                     );
                 }
             }
@@ -3409,6 +3493,8 @@ impl ShapeLine {
                 max_ascent,
                 max_descent,
                 line_height_opt,
+                top_pad: max_top_pad,
+                bottom_pad: max_bottom_pad,
                 glyphs,
                 decorations,
             });
@@ -3421,6 +3507,8 @@ impl ShapeLine {
                 max_ascent: 0.0,
                 max_descent: 0.0,
                 line_height_opt: self.metrics_opt.map(|x| x.line_height),
+                top_pad: 0.0,
+                bottom_pad: 0.0,
                 glyphs: Vec::default(),
                 decorations: Vec::new(),
             });
