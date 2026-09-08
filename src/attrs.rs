@@ -198,8 +198,6 @@ impl FontFeatures {
 /// according to the span's `BiDi` direction.
 #[derive(Clone, Copy, Debug)]
 pub struct SpanPadding {
-    pub top: f32,
-    pub bottom: f32,
     pub start: f32,
     pub end: f32,
 }
@@ -207,50 +205,18 @@ pub struct SpanPadding {
 impl SpanPadding {
     /// Zero padding on all sides.
     pub const ZERO: Self = Self {
-        top: 0.0,
-        bottom: 0.0,
         start: 0.0,
         end: 0.0,
     };
 
     /// Create padding with explicit values for each side.
-    pub const fn new(top: f32, bottom: f32, start: f32, end: f32) -> Self {
-        Self {
-            top,
-            bottom,
-            start,
-            end,
-        }
+    pub const fn new(start: f32, end: f32) -> Self {
+        Self { start, end }
     }
 
-    /// Create padding with the same value on all four sides.
+    /// Create padding with the same value on both sides.
     pub const fn uniform(px: f32) -> Self {
-        Self {
-            top: px,
-            bottom: px,
-            start: px,
-            end: px,
-        }
-    }
-
-    /// Create padding with one value for top/bottom and another for start/end.
-    pub const fn symmetric(vertical: f32, horizontal: f32) -> Self {
-        Self {
-            top: vertical,
-            bottom: vertical,
-            start: horizontal,
-            end: horizontal,
-        }
-    }
-
-    /// Top padding in pixels.
-    pub const fn top(&self) -> f32 {
-        self.top
-    }
-
-    /// Bottom padding in pixels.
-    pub const fn bottom(&self) -> f32 {
-        self.bottom
+        Self { start: px, end: px }
     }
 
     /// Start (inline-start) padding in pixels.
@@ -273,10 +239,7 @@ impl PartialEq for SpanPadding {
                 a == b
             }
         }
-        nan_eq(self.top, other.top)
-            && nan_eq(self.bottom, other.bottom)
-            && nan_eq(self.start, other.start)
-            && nan_eq(self.end, other.end)
+        nan_eq(self.start, other.start) && nan_eq(self.end, other.end)
     }
 }
 
@@ -295,8 +258,6 @@ impl Hash for SpanPadding {
             }
         }
 
-        canonical_bits(self.top).hash(hasher);
-        canonical_bits(self.bottom).hash(hasher);
         canonical_bits(self.start).hash(hasher);
         canonical_bits(self.end).hash(hasher);
     }
