@@ -3143,6 +3143,9 @@ impl ShapeLine {
             let mut y = 0.;
             let mut max_ascent: f32 = 0.;
             let mut max_descent: f32 = 0.;
+            let mut max_span_line_height: Option<f32> = None;
+            let mut max_base_pad: f32 = 0.;
+            let mut uses_base_line_height = false;
             let mut max_top_pad: f32 = 0.;
             let mut max_bottom_pad: f32 = 0.;
             let alignment_correction = match (align, self.rtl) {
@@ -3205,6 +3208,9 @@ impl ShapeLine {
                                  decorations: &mut Vec<DecorationSpan>,
                                  max_ascent: &mut f32,
                                  max_descent: &mut f32,
+                                 max_span_line_height: &mut Option<f32>,
+                                 max_base_pad: &mut f32,
+                                 uses_base_line_height: &mut bool,
                                  max_top_pad: &mut f32,
                                  max_bottom_pad: &mut f32| {
                 for r in visual_line.ranges[range.clone()].iter() {
@@ -3420,6 +3426,25 @@ impl ShapeLine {
                             *max_descent = max_descent.max(glyph_font_size * glyph.descent);
                             *max_top_pad = max_top_pad.max(top_pad);
                             *max_bottom_pad = max_bottom_pad.max(bottom_pad);
+                            // Track the line-height contribution of this
+                            // glyph's span, with its own vertical padding
+                            // included: a span's top/bottom padding belongs
+                            // to the span's line box, so it only grows the
+                            // line's height when the span's line height plus
+                            // the padding exceeds the buffer's base line
+                            // height (see `LayoutLine::line_height`).
+                            // Padding on content laid out at the base line
+                            // height extends the base line height directly.
+                            if let Some(metrics) = &glyph.metrics_opt {
+                                let span_line_height = metrics.line_height + top_pad + bottom_pad;
+                                *max_span_line_height = max_span_line_height
+                                    .map_or(Some(span_line_height), |line_height| {
+                                        Some(line_height.max(span_line_height))
+                                    });
+                            } else {
+                                *uses_base_line_height = true;
+                                *max_base_pad = max_base_pad.max(top_pad + bottom_pad);
+                            }
 
                             // Queue the padding boundaries that fall after
                             // this glyph so they are emitted (before the next
@@ -3451,6 +3476,9 @@ impl ShapeLine {
                         &mut decorations,
                         &mut max_ascent,
                         &mut max_descent,
+                        &mut max_span_line_height,
+                        &mut max_base_pad,
+                        &mut uses_base_line_height,
                         &mut max_top_pad,
                         &mut max_bottom_pad,
                     );
@@ -3466,22 +3494,23 @@ impl ShapeLine {
                         &mut decorations,
                         &mut max_ascent,
                         &mut max_descent,
+                        &mut max_span_line_height,
+                        &mut max_base_pad,
+                        &mut uses_base_line_height,
                         &mut max_top_pad,
                         &mut max_bottom_pad,
                     );
                 }
             }
 
-            let mut line_height_opt: Option<f32> = None;
-            for glyph in &glyphs {
-                if let Some(glyph_line_height) = glyph.line_height_opt {
-                    line_height_opt = line_height_opt
-                        .map_or(Some(glyph_line_height), |line_height| {
-                            Some(line_height.max(glyph_line_height))
-                        });
-                }
-            }
-
+            // The line-height contributions were tracked per glyph while the
+            // ranges were processed, since a span's vertical padding has to
+            // be combined with *that same span's* line height (the max of
+            // the span line heights plus the max of the paddings would
+            // double-count the padding when the tallest span and the most
+            // padded span are different spans). A span with a smaller line
+            // height must not reduce the height of a line that contains
+            // content at the base line height.
             layout_lines.push(LayoutLine {
                 w: if align != Align::Justified {
                     visual_line.w
@@ -3492,7 +3521,9 @@ impl ShapeLine {
                 },
                 max_ascent,
                 max_descent,
-                line_height_opt,
+                line_height_opt: max_span_line_height,
+                uses_base_line_height,
+                base_pad: max_base_pad,
                 top_pad: max_top_pad,
                 bottom_pad: max_bottom_pad,
                 glyphs,
@@ -3502,11 +3533,17 @@ impl ShapeLine {
 
         // This is used to create a visual line for empty lines (e.g. lines with only a <CR>)
         if layout_lines.is_empty() {
+            // An empty line has no base content of its own: its height is
+            // determined by the default attrs' line height (e.g. when the
+            // line is inside a span with its own metrics), falling back to
+            // the buffer's base line height.
             layout_lines.push(LayoutLine {
                 w: 0.0,
                 max_ascent: 0.0,
                 max_descent: 0.0,
                 line_height_opt: self.metrics_opt.map(|x| x.line_height),
+                uses_base_line_height: false,
+                base_pad: 0.0,
                 top_pad: 0.0,
                 bottom_pad: 0.0,
                 glyphs: Vec::default(),

@@ -115,13 +115,42 @@ pub struct LayoutLine {
     pub max_ascent: f32,
     /// Maximum descent of the glyphs in line
     pub max_descent: f32,
-    /// Maximum line height of any spans in line
+    /// Maximum line height of any spans in line that override the buffer's
+    /// base line height in their `Attrs`, **including** that span's own
+    /// top/bottom [`crate::SpanPadding`]
+    ///
+    /// A span's vertical padding belongs to the span's line box (its line
+    /// height extended by the padding), so it only counts here for spans
+    /// that override the line height; the padding of content laid out at
+    /// the base line height is tracked in [`Self::base_pad`] instead.
     pub line_height_opt: Option<f32>,
-    /// Top [`crate::SpanPadding`] (in pixels) applied to this line. It extends
-    /// the line's height above the glyphs and offsets their baseline down.
+    /// Whether the line contains any content laid out at the base line
+    /// height, i.e. any glyph whose span does not override the line height
+    /// in its `Attrs`
+    ///
+    /// When `true`, the base line height participates in determining the
+    /// final line height via [`Self::line_height`]. When `false`, the
+    /// line's content fully specifies its own line height (or the line is
+    /// empty), so [`Self::line_height_opt`] alone determines it.
+    pub uses_base_line_height: bool,
+    /// Maximum top+bottom [`crate::SpanPadding`] (in pixels) applied to
+    /// this line's content laid out at the base line height (spans that do
+    /// not override the line height in their `Attrs`)
+    ///
+    /// Added to the base line height in [`Self::line_height`]. Unlike
+    /// [`Self::top_pad`]/[`Self::bottom_pad`], which take the max over all
+    /// of the line's spans and drive the baseline placement, this only
+    /// covers the base-height content; the padding of spans that override
+    /// the line height is included in [`Self::line_height_opt`] instead.
+    pub base_pad: f32,
+    /// Top [`crate::SpanPadding`] (in pixels) applied to this line: the max
+    /// over all of the line's spans. Glyphs are placed below it, centered
+    /// in the unpadded part of the line box, which shifts their baseline
+    /// down.
     pub top_pad: f32,
-    /// Bottom [`crate::SpanPadding`] (in pixels) applied to this line. It
-    /// extends the line's height below the glyphs.
+    /// Bottom [`crate::SpanPadding`] (in pixels) applied to this line: the
+    /// max over all of the line's spans. The line box extends below the
+    /// glyphs by this much.
     pub bottom_pad: f32,
     /// Glyphs in line
     pub glyphs: Vec<LayoutGlyph>,
@@ -130,15 +159,43 @@ pub struct LayoutLine {
 }
 
 impl LayoutLine {
-    /// Height of the line (in pixels), including vertical
-    /// [`crate::SpanPadding`].
+    /// The line's height given the buffer's base `line_height`, including
+    /// this line's vertical [`crate::SpanPadding`].
     ///
-    /// This is the line height provided by a span's metrics (if any) or
-    /// `default` (the buffer's line height) plus [`Self::top_pad`] and
-    /// [`Self::bottom_pad`], the same way horizontal padding is included in
-    /// [`Self::w`].
-    pub fn line_height(&self, default: f32) -> f32 {
-        self.line_height_opt.unwrap_or(default) + self.top_pad + self.bottom_pad
+    /// The height is the largest of:
+    /// - the base line height plus the vertical padding of the line's
+    ///   base-height content ([`Self::base_pad`]), when the line has any
+    ///   such content ([`Self::uses_base_line_height`]);
+    /// - the padded line height of each span that overrides the line height
+    ///   in its `Attrs` ([`Self::line_height_opt`] holds the max).
+    ///
+    /// Spans with a line height larger than the base one increase the
+    /// line's height. Spans with a smaller line height only reduce it when
+    /// the line's content fully overrides the line height (e.g. a line that
+    /// is entirely within such a span, or an empty line inside it);
+    /// otherwise the base line height wins and the span has no impact on
+    /// the line's height. Vertical padding extends its span's line box: it
+    /// only grows the line beyond the base line height when the span's
+    /// line height plus its padding exceeds it.
+    pub const fn line_height(&self, line_height: f32) -> f32 {
+        let base = if self.uses_base_line_height {
+            line_height + self.base_pad
+        } else {
+            0.0
+        };
+        match self.line_height_opt {
+            Some(span_line_height) => span_line_height.max(base),
+            // No span overrides the line height: the base-height content
+            // decides, which for an empty line means the buffer's base
+            // line height.
+            None => {
+                if self.uses_base_line_height {
+                    base
+                } else {
+                    line_height
+                }
+            }
+        }
     }
 }
 

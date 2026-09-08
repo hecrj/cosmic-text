@@ -20,12 +20,15 @@
 //!   RTL line).
 //! - Across a wrap, each padding boundary is emitted on the visual line that
 //!   contains the glyph after which it is placed.
-//! - `top`/`bottom` padding extends the visual line's height (it is stored
-//!   on the `LayoutLine` and included in every line-height computation), the
-//!   same way horizontal padding extends the line's width; it does *not*
-//!   touch `max_ascent`/`max_descent`. Glyphs are placed below the top
-//!   padding, centered in the unpadded part of the line box — the vertical
-//!   analogue of horizontal start padding offsetting the first glyph.
+//! - `top`/`bottom` padding extends the span's line box (its line height —
+//!   the span's override, or the buffer's base line height when the span
+//!   does not override it — plus the padding), which participates in the
+//!   visual line's height the same way a span line-height override does:
+//!   the line grows only when the span's line box is taller than the line
+//!   height the rest of the line uses. It does *not* touch
+//!   `max_ascent`/`max_descent`. Glyphs are placed below the top padding,
+//!   centered in the unpadded part of the line box — the vertical analogue
+//!   of horizontal start padding offsetting the first glyph.
 
 use cosmic_text::{
     fontdb, Align, Attrs, Buffer, Direction, Ellipsize, FontSystem, Metrics, Shaping, SpanPadding,
@@ -59,6 +62,8 @@ struct Line {
     max_ascent: f32,
     max_descent: f32,
     line_height_opt: Option<f32>,
+    uses_base_line_height: bool,
+    base_pad: f32,
     top_pad: f32,
     bottom_pad: f32,
     glyphs: Vec<Glyph>,
@@ -70,6 +75,8 @@ fn line_from(line: &cosmic_text::LayoutLine) -> Line {
         max_ascent: line.max_ascent,
         max_descent: line.max_descent,
         line_height_opt: line.line_height_opt,
+        uses_base_line_height: line.uses_base_line_height,
+        base_pad: line.base_pad,
         top_pad: line.top_pad,
         bottom_pad: line.bottom_pad,
         glyphs: line
@@ -272,9 +279,10 @@ fn ltr_top_bottom_padding_inflates_line_height() {
     );
     assert_eq!(pad.len(), 1);
     assert_close(pad[0].w, base[0].w, "line width");
-    // Vertical padding extends the line's height (stored on the
-    // `LayoutLine`, added to every line-height computation); it does not
-    // touch the glyphs' metrics or the span's line-height override.
+    // Vertical padding on content laid out at the base line height extends
+    // the line's height (base line height + padding, tracked on the
+    // `LayoutLine`); it does not touch the glyphs' metrics or the span's
+    // line-height override.
     assert_eq!(
         pad[0].line_height_opt, base[0].line_height_opt,
         "line height opt"
@@ -968,4 +976,155 @@ fn mid_word_padding_incongruent_rtl_word() {
     let sp = pad[0].glyphs.iter().find(|g| g.start == 11).unwrap();
     assert_close(lamed.x - (vav.x + vav.w), 3.0, "gap between 'ו' and 'ל'");
     assert_close(sp.x - (shin.x + shin.w), 4.0, "gap after the word");
+}
+
+/// Lays out `parts` (text with per-part `Attrs`) with the given buffer base
+/// line height and returns the first layout run's `(line_top, line_y,
+/// line_height)` — the values rendering, scrolling and hit-testing consume.
+fn run_metrics(parts: &[(&str, Attrs)], line_height: f32) -> (f32, f32, f32) {
+    let mut font_system = font_system();
+    let mut buffer = Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, line_height));
+    buffer.set_wrap(Wrap::None);
+    let defaults = Attrs::new();
+    buffer.set_rich_text(parts.iter().cloned(), &defaults, Shaping::Advanced, None);
+    let mut buffer = buffer.borrow_with(&mut font_system);
+    buffer.set_size(Some(500.0), None);
+    let run = buffer.layout_runs().next().expect("expected a layout run");
+    (run.line_top, run.line_y, run.line_height)
+}
+
+#[test]
+fn span_line_height_plus_padding_within_base_does_not_grow_line() {
+    // Buffer base line height 24. A span with line height 20 and 2px of
+    // top/bottom padding has a line box of 24 — the same as the base, so
+    // the line must stay at 24 with the baseline unchanged: the padding
+    // belongs to the span's line box, it is not added on top of the base
+    // line height.
+    let (base_top, base_y, base_h) = run_metrics(&[("hello", Attrs::new())], 24.0);
+    assert_close(base_h, 24.0, "base line height");
+
+    let span = Attrs::new()
+        .metrics(Metrics::new(FONT_SIZE, 20.0))
+        .padding(SpanPadding::new(2.0, 2.0, 0.0, 0.0));
+
+    // Fully spanned line.
+    let (span_top, span_y, span_h) = run_metrics(&[("hello", span.clone())], 24.0);
+    assert_close(span_h, 24.0, "fully spanned line height");
+    assert_close(span_top, base_top, "fully spanned line top");
+    assert_close(span_y, base_y, "fully spanned baseline");
+
+    // Line with content at the base line height next to the span.
+    let (partial_top, partial_y, partial_h) =
+        run_metrics(&[("he ", Attrs::new()), ("llo", span)], 24.0);
+    assert_close(partial_h, 24.0, "partial span line height");
+    assert_close(partial_top, base_top, "partial span line top");
+    assert_close(partial_y, base_y, "partial span baseline");
+}
+
+#[test]
+fn span_line_box_exceeding_base_grows_line() {
+    // A span whose line box (line height + padding) exceeds the base line
+    // height grows the line to exactly that box, fully spanned or not.
+    let span = |lh: f32| {
+        Attrs::new()
+            .metrics(Metrics::new(FONT_SIZE, lh))
+            .padding(SpanPadding::new(2.0, 2.0, 0.0, 0.0))
+    };
+
+    // 30 + 2 + 2 = 34 > 24.
+    let (_, _, h) = run_metrics(&[("hello", span(30.0))], 24.0);
+    assert_close(h, 34.0, "fully spanned line height");
+    let (_, _, h) = run_metrics(&[("he ", Attrs::new()), ("llo", span(30.0))], 24.0);
+    assert_close(h, 34.0, "partial span line height");
+
+    // Padding on content laid out at the base line height extends the base
+    // line height: 24 + 2 + 2 = 28.
+    let (_, _, h) = run_metrics(
+        &[(
+            "hello",
+            Attrs::new().padding(SpanPadding::new(2.0, 2.0, 0.0, 0.0)),
+        )],
+        24.0,
+    );
+    assert_close(h, 28.0, "base line height + padding");
+}
+
+#[test]
+fn span_padding_counts_against_own_span_line_height() {
+    // A line with two spans overriding the line height: the taller span
+    // (30, no padding) and a smaller padded span (20 + 2 + 2 = 24). The
+    // line height is the max of the spans' line boxes (30), not the max
+    // line height plus the max padding (30 + 4 = 34) — a span's padding is
+    // combined with that same span's line height.
+    let (_, _, h) = run_metrics(
+        &[
+            (
+                "hello ",
+                Attrs::new().metrics(Metrics::new(FONT_SIZE, 30.0)),
+            ),
+            (
+                "world",
+                Attrs::new()
+                    .metrics(Metrics::new(FONT_SIZE, 20.0))
+                    .padding(SpanPadding::new(2.0, 2.0, 0.0, 0.0)),
+            ),
+        ],
+        24.0,
+    );
+    assert_close(h, 30.0, "line height");
+}
+
+#[test]
+fn span_line_height_fields_track_padded_span_boxes() {
+    // `LayoutLine::line_height_opt` holds the max padded span line height
+    // and `LayoutLine::base_pad` the max top+bottom padding of the
+    // base-height content, the two components of `line_height(base)`.
+    let span = Attrs::new()
+        .metrics(Metrics::new(FONT_SIZE, 20.0))
+        .padding(SpanPadding::new(2.0, 3.0, 0.0, 0.0));
+    let base = layout_parts(
+        &[("hello", SpanPadding::ZERO)],
+        Wrap::None,
+        Some(500.0),
+        Direction::Auto,
+    );
+    let pad = layout_parts(
+        &[
+            ("he ", SpanPadding::new(1.0, 4.0, 0.0, 0.0)),
+            ("llo", SpanPadding::ZERO),
+        ],
+        Wrap::None,
+        Some(500.0),
+        Direction::Auto,
+    );
+    // Unpadded base-height line: no components.
+    assert_eq!(base[0].line_height_opt, None, "line height opt");
+    assert!(base[0].uses_base_line_height, "uses base");
+    assert_close(base[0].base_pad, 0.0, "base pad");
+    // Padding on base-height content only.
+    assert_eq!(pad[0].line_height_opt, None, "line height opt");
+    assert!(pad[0].uses_base_line_height, "uses base");
+    assert_close(pad[0].base_pad, 5.0, "base pad");
+
+    let mut font_system = font_system();
+    let mut buffer = Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, 24.0));
+    buffer.set_wrap(Wrap::None);
+    let defaults = Attrs::new();
+    buffer.set_rich_text(
+        vec![("he ", defaults.clone()), ("llo", span)],
+        &defaults,
+        Shaping::Advanced,
+        None,
+    );
+    let mut buffer = buffer.borrow_with(&mut font_system);
+    buffer.set_size(Some(500.0), None);
+    let line = &buffer.line_layout(0).expect("expected at least one line")[0];
+    // The span's line box (20 + 2 + 3 = 25) is tracked with its own
+    // padding; the base-height "he " has no padding.
+    assert_eq!(line.line_height_opt, Some(25.0), "padded span line height");
+    assert!(line.uses_base_line_height, "uses base");
+    assert_close(line.base_pad, 0.0, "base pad");
+    assert_close(line.top_pad, 2.0, "top pad");
+    assert_close(line.bottom_pad, 3.0, "bottom pad");
+    assert_close(line.line_height(24.0), 25.0, "line height");
 }

@@ -198,10 +198,14 @@ impl FontFeatures {
 /// resolve them according to the span's `BiDi` direction. They are included
 /// in the line's width the same way the content is.
 ///
-/// The `top`/`bottom` sides extend the visual line's height (they are stored
-/// on the laid-out line and added to every line-height computation) without
-/// affecting the glyphs' `max_ascent`/`max_descent`. Glyphs are placed below
-/// the top padding, the same way they are placed after the start padding.
+/// The `top`/`bottom` sides extend the span's line box (its line height —
+/// the span's own override, or the buffer's base line height when the span
+/// does not override it — plus this padding) without affecting the glyphs'
+/// `max_ascent`/`max_descent`. The extended height participates in the
+/// visual line's line-height computation the same way a span line-height
+/// override does: it only grows the line's height when it is larger than
+/// the line height the rest of the line uses. Glyphs are placed below the
+/// top padding, the same way they are placed after the start padding.
 #[derive(Clone, Copy, Debug)]
 pub struct SpanPadding {
     pub top: f32,

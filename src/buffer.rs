@@ -258,10 +258,10 @@ impl<'b> Iterator for LayoutRunIter<'b> {
 
                 let line_top = self.line_top - self.scroll;
                 let glyph_height = layout_line.max_ascent + layout_line.max_descent;
-                // Vertical `SpanPadding` extends the line's box; the glyphs
-                // are centered in the unpadded part of it, below the top
-                // padding — the vertical analogue of horizontal start
-                // padding offsetting the first glyph.
+                // The glyphs are placed below the line's top `SpanPadding`,
+                // centered in the unpadded part of the line box — the
+                // vertical analogue of horizontal start padding offsetting
+                // the first glyph.
                 let centering_offset =
                     (line_height - layout_line.top_pad - layout_line.bottom_pad - glyph_height)
                         / 2.0;
