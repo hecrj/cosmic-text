@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Plug `SpanPadding` into shape/layout calculations: horizontal (`start`/`end`) padding is attributed to words, included in word widths (so wrapping and ellipsization account for it) and placed at the word's BiDi-aware x-stream edges; `top`/`bottom` padding inflates the line's `max_ascent`/`max_descent`
+- Plug `SpanPadding` into shape/layout calculations: horizontal (`start`/`end`) padding is attributed to words, included in word widths (so wrapping and ellipsization account for it) and placed at the boundary's byte offset — inside a word it is emitted between the two adjacent glyph clusters at that offset (sub-word precision), and at a word's edges on the word's BiDi-aware x-stream edges; `top`/`bottom` padding inflates the line's `max_ascent`/`max_descent`
 
 ## [0.19.0] - 2026-04-22
 

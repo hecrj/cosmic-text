@@ -960,8 +960,8 @@ impl ShapeSpan {
     /// - `trail` — padding on the logical-end side of the word (attr
     ///   sub-ranges that begin or end at the word's last byte).
     /// - `mid`   — padding at sub-range boundaries strictly inside the word;
-    ///   placed at a word edge during layout (sub-word precision is not
-    ///   tracked).
+    ///   placed between the word's glyphs at the boundary during layout
+    ///   ([`Self::word_pad_emits`]).
     ///
     /// A word without glyphs owns no padding.
     fn word_pad_sides(&self, word_idx: usize) -> (f32, f32, f32) {
@@ -1009,6 +1009,87 @@ impl ShapeSpan {
     fn word_pad(&self, word_idx: usize) -> f32 {
         let (lead, mid, trail) = self.word_pad_sides(word_idx);
         lead + mid + trail
+    }
+
+    /// The word's horizontal padding boundaries as `(after_idx, px)` pairs
+    /// for layout: `after_idx` is the index of the word's glyph (in stored,
+    /// i.e. x-stream, order) *after which* the boundary's padding is
+    /// emitted; `usize::MAX` denotes the position before the word's first
+    /// glyph.
+    ///
+    /// A boundary at byte `b` is emitted after the last glyph whose cluster
+    /// lies on the lower-byte side of `b`, which places the padding between
+    /// the two adjacent clusters at the boundary. If `b` falls strictly
+    /// inside a single glyph cluster (e.g. a ligature), the padding is
+    /// emitted after that cluster — sub-cluster precision is not tracked.
+    fn word_pad_emits(&self, word_idx: usize, congruent: bool) -> Vec<(usize, f32)> {
+        if !self.has_padding() {
+            return Vec::new();
+        }
+        let Some(word) = self.words.get(word_idx) else {
+            return Vec::new();
+        };
+        let Some(first) = word.glyphs.first() else {
+            return Vec::new();
+        };
+        let last = word.glyphs.last().expect("word has at least one glyph");
+        let ws = first.start.min(last.start);
+        let we = first.end.max(last.end);
+        let len = word.glyphs.len();
+
+        // The stored glyph order is the x-stream order. When the span
+        // direction is congruent with the line direction, byte offsets
+        // ascend in that order and a mid-word boundary at `b` is emitted
+        // after the last glyph starting before `b`. When incongruent, byte
+        // offsets descend and the boundary is emitted after the last glyph
+        // ending after `b`.
+        let boundary_after = |b: usize| {
+            word.glyphs
+                .iter()
+                .rposition(|g| if congruent { g.start < b } else { g.end > b })
+                .unwrap_or(usize::MAX)
+        };
+
+        let mut emits = Vec::new();
+        // `start` boundaries at byte `b` belong to the word when `ws <= b < we`.
+        for (b, px) in &self.padding_start {
+            if *px == 0.0 || *b < ws {
+                continue;
+            }
+            if *b >= we {
+                break;
+            }
+            let after = if *b == ws {
+                if congruent {
+                    usize::MAX
+                } else {
+                    len - 1
+                }
+            } else {
+                boundary_after(*b)
+            };
+            emits.push((after, *px));
+        }
+        // `end` boundaries at byte `b` belong to the word when `ws < b <= we`.
+        for (b, px) in &self.padding_end {
+            if *px == 0.0 || *b <= ws {
+                continue;
+            }
+            if *b > we {
+                break;
+            }
+            let after = if *b == we {
+                if congruent {
+                    len - 1
+                } else {
+                    usize::MAX
+                }
+            } else {
+                boundary_after(*b)
+            };
+            emits.push((after, *px));
+        }
+        emits
     }
 
     /// Shape a span into a set of words.
@@ -3082,34 +3163,36 @@ impl ShapeLine {
                             (true, true) => &word.glyphs[r.start.glyph..r.end.glyph],
                         };
 
-                        // Horizontal padding on this word's x-stream sides.
-                        // The x-stream first/last glyph of a word is the first/last
-                        // emitted glyph, so the lead advance goes before
-                        // `included_glyphs[0]` and the trail advance after the last
-                        // one. Which *logical* side maps to which x-stream side
-                        // depends on whether the span's direction is congruent with
-                        // the line's direction.
-                        let (vis_lead, vis_trail) = if is_ellipsis || included_glyphs.is_empty() {
-                            (0.0, 0.0)
-                        } else {
-                            let (lead, mid, trail) = self.spans[r.span].word_pad_sides(i);
-                            if congruent {
-                                (lead + mid, trail)
+                        // Horizontal padding boundaries inside this word, as
+                        // (after_idx, px) pairs: the padding is emitted after
+                        // the word's glyph at `after_idx` (in stored order),
+                        // which places it between the two adjacent clusters at
+                        // the boundary. `usize::MAX` denotes the position
+                        // before the word's first glyph.
+                        let pad_emits: Vec<(usize, f32)> =
+                            if is_ellipsis || included_glyphs.is_empty() {
+                                Vec::new()
                             } else {
-                                (trail, lead + mid)
-                            }
+                                self.spans[r.span].word_pad_emits(i, congruent)
+                            };
+                        let first_gi = if i == r.start.word { r.start.glyph } else { 0 };
+
+                        // Padding emitted before the word's first glyph, only
+                        // when this range contains that glyph (otherwise it
+                        // stays with the visual line that does).
+                        let mut pending_pad = if first_gi == 0 {
+                            pad_emits
+                                .iter()
+                                .filter(|(after, _)| *after == usize::MAX)
+                                .map(|(_, px)| *px)
+                                .sum::<f32>()
+                        } else {
+                            0.0
                         };
-                        // The padding only applies if this range contains the
-                        // corresponding word edge, so it stays with the visual
-                        // line that contains that edge (e.g. across a wrap).
-                        let emits_lead =
-                            vis_lead != 0.0 && (i > r.start.word || r.start.glyph == 0);
-                        let emits_trail = vis_trail != 0.0
-                            && (i < r.end.word || r.end.glyph == word.glyphs.len());
 
                         for (gi, glyph) in included_glyphs.iter().enumerate() {
-                            if gi == 0 && emits_lead {
-                                *x += if self.rtl { -vis_lead } else { vis_lead };
+                            if pending_pad != 0.0 {
+                                *x += if self.rtl { -pending_pad } else { pending_pad };
                             }
                             // Use overridden font size
                             let font_size = glyph.metrics_opt.map_or(font_size, |x| x.font_size);
@@ -3257,9 +3340,22 @@ impl ShapeLine {
                             *max_ascent = max_ascent.max(glyph_font_size * glyph.ascent + top_pad);
                             *max_descent =
                                 max_descent.max(glyph_font_size * glyph.descent + bottom_pad);
+
+                            // Queue the padding boundaries that fall after
+                            // this glyph so they are emitted (before the next
+                            // glyph's advance) on the same visual line.
+                            pending_pad = pad_emits
+                                .iter()
+                                .filter(|(after, _)| *after == first_gi + gi)
+                                .map(|(_, px)| *px)
+                                .sum::<f32>();
                         }
-                        if emits_trail {
-                            *x += if self.rtl { -vis_trail } else { vis_trail };
+                        // Emit whatever was queued after the word's last
+                        // included glyph (this includes the word's trailing
+                        // boundary when the range contains the word's last
+                        // glyph).
+                        if pending_pad != 0.0 {
+                            *x += if self.rtl { -pending_pad } else { pending_pad };
                         }
                     }
                 }

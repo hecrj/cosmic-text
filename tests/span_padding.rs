@@ -3,19 +3,25 @@
 //! Padding semantics implemented in `src/shape.rs`:
 //! - `start`/`end` horizontal padding is attributed to words: a boundary at
 //!   byte `b` contributes its `start` padding to the word whose content starts
-//!   at `b` and its `end` padding to the word whose content ends at `b`. The
-//!   attributed padding is included in the word's width (so wrapping is
-//!   affected) and placed on the word's x-stream edges during layout.
-//! - `top`/`bottom` padding inflates the containing glyph's contribution to
-//!   the line's `max_ascent`/`max_descent`.
+//!   at `b` and its `end` padding to the word whose content ends at `b` (so
+//!   each boundary is counted exactly once). The attributed padding is
+//!   included in the word's width, so wrapping and ellipsization account for
+//!   it.
+//! - Horizontal padding is placed at the boundary's byte offset: a boundary
+//!   inside a word is emitted between the two adjacent glyph clusters at that
+//!   offset (sub-word precision), while boundaries at a word's edges are
+//!   emitted on the word's x-stream edges. If a boundary falls strictly inside
+//!   a single glyph cluster (e.g. a ligature) it is emitted after that
+//!   cluster — sub-cluster precision is not tracked.
 //! - Direction-aware placement: the *logical* start side of a span maps to the
 //!   x-stream lead side when the span direction is congruent with the line
 //!   direction (LTR span in LTR line, RTL span in RTL line), and to the
 //!   x-stream trail side when incongruent (RTL span in LTR line, LTR span in
 //!   RTL line).
-//! - Across a wrap, the x-stream-lead padding rides with the line receiving
-//!   the word's first glyph and the x-stream-trail padding with the line
-//!   receiving the word's last glyph.
+//! - Across a wrap, each padding boundary is emitted on the visual line that
+//!   contains the glyph after which it is placed.
+//! - `top`/`bottom` padding inflates the containing glyph's contribution to
+//!   the line's `max_ascent`/`max_descent`.
 
 use cosmic_text::{
     fontdb, Align, Attrs, Buffer, Direction, Ellipsize, FontSystem, Metrics, Shaping, SpanPadding,
@@ -697,4 +703,94 @@ fn ellipsize_with_padding_smoke() {
         line.glyphs.iter().any(|g| g.start == g.end),
         "expected an ellipsis glyph"
     );
+}
+
+#[test]
+fn mid_word_padding_is_placed_between_glyphs() {
+    // "hello" with a span over just "he": start padding 2, end padding 3.
+    // The span's end falls *inside* the word "hello" (at byte 2, between "e"
+    // and "l"), so the end padding must be emitted between those two glyphs
+    // rather than at the word's edge.
+    let base = layout_parts(
+        &[("hello", SpanPadding::ZERO)],
+        Wrap::None,
+        Some(500.0),
+        Direction::Auto,
+    );
+    let pad = layout_parts(
+        &[
+            ("he", SpanPadding::new(0.0, 0.0, 2.0, 3.0)),
+            ("llo", SpanPadding::ZERO),
+        ],
+        Wrap::None,
+        Some(500.0),
+        Direction::Auto,
+    );
+    assert_eq!(base.len(), 1);
+    assert_eq!(pad.len(), 1);
+    // The line is widened by the full start + end padding.
+    assert_close(pad[0].w, base[0].w + 5.0, "line width");
+    // The start padding sits before the first glyph (LTR).
+    assert_close(pad[0].glyphs[0].x, 2.0, "first glyph x");
+    // "h" and "e" are shifted by the start padding only; "l", "l", "o" are
+    // shifted by start + end padding.
+    for g in &pad[0].glyphs {
+        let shift = if g.start < 2 { 2.0 } else { 5.0 };
+        assert_close(g.x, base_x(&base[0], g.start) + shift, "glyph shift");
+    }
+    // The 3px end padding is the visible gap between "e" (byte 1) and
+    // "l" (byte 2).
+    let e = pad[0].glyphs.iter().find(|g| g.start == 1).unwrap();
+    let l = pad[0].glyphs.iter().find(|g| g.start == 2).unwrap();
+    assert_close(l.x - (e.x + e.w), 3.0, "gap between 'e' and 'l'");
+}
+
+#[test]
+fn mid_word_padding_incongruent_rtl_word() {
+    // "hi שלום bye" — forced LTR line; a span over just "של" (bytes 3..7)
+    // within the RTL word "שלום". The span's end (byte 7) falls inside the
+    // word, between "ל" and "ו", and its start (byte 3) is at the word's
+    // logical start ("ש", the rightmost glyph in an LTR line).
+    let base = layout_parts(
+        &[("hi שלום bye", SpanPadding::ZERO)],
+        Wrap::None,
+        Some(500.0),
+        Direction::LeftToRight,
+    );
+    let pad = layout_parts(
+        &[
+            ("hi ", SpanPadding::ZERO),
+            ("של", SpanPadding::new(0.0, 0.0, 4.0, 3.0)),
+            ("ום bye", SpanPadding::ZERO),
+        ],
+        Wrap::None,
+        Some(500.0),
+        Direction::LeftToRight,
+    );
+    assert_eq!(base.len(), 1);
+    assert_eq!(pad.len(), 1);
+    assert_close(pad[0].w, base[0].w + 7.0, "line width");
+    // Bytes: h=0 i=1 sp=2 ש=3..5 ל=5..7 ו=7..9 ם=9..11 sp=11 b=12 y=13 e=14.
+    // The 3px end padding (byte 7) sits between "ו" and "ל", pushing "ל"/"ש"
+    // (and everything after the word) right by 3. The 4px start padding sits
+    // to the right of "ש" (the word's logical start), pushing the trailing
+    // content right by a further 4.
+    for g in &pad[0].glyphs {
+        let shift = match g.start {
+            0..=2 => 0.0, // "hi "
+            9 => 0.0,     // "ם" (leftmost glyph)
+            7 => 0.0,     // "ו"
+            3 | 5 => 3.0, // "ל" / "ש"
+            _ => 7.0,     // trailing " bye"
+        };
+        assert_close(g.x, base_x(&base[0], g.start) + shift, "glyph shift");
+    }
+    // Visible gaps: 3px between "ו" (right edge) and "ל", and 4px between
+    // "ש" (right edge) and the trailing space.
+    let vav = pad[0].glyphs.iter().find(|g| g.start == 7).unwrap();
+    let lamed = pad[0].glyphs.iter().find(|g| g.start == 5).unwrap();
+    let shin = pad[0].glyphs.iter().find(|g| g.start == 3).unwrap();
+    let sp = pad[0].glyphs.iter().find(|g| g.start == 11).unwrap();
+    assert_close(lamed.x - (vav.x + vav.w), 3.0, "gap between 'ו' and 'ל'");
+    assert_close(sp.x - (shin.x + shin.w), 4.0, "gap after the word");
 }
