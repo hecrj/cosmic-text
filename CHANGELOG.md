@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `SpanPadding` type and `Attrs::padding` builder (cherry-picked from upstream pop-os/cosmic-text@b4bd58ac)
+
 ### Fixed
 
 - Cache monospace fallback candidates to speed up `Family::Monospace` shaping: https://github.com/pop-os/cosmic-text/issues/518
 
 ### Changed
 
+- Plug `SpanPadding` into shape/layout calculations: horizontal (`start`/`end`) padding is attributed to words, included in word widths (so wrapping and ellipsization account for it) and placed at the boundary's byte offset — inside a word it is emitted between the two adjacent glyph clusters at that offset (sub-word precision), and at a word's edges on the word's BiDi-aware x-stream edges; `top`/`bottom` padding inflates the line's `max_ascent`/`max_descent`
 - `FontFallbackIter::new` now takes the `Attrs` the font match keys were computed with: https://github.com/pop-os/cosmic-text/issues/518
 
 ## [0.19.0] - 2026-04-22
