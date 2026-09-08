@@ -3435,13 +3435,22 @@ impl ShapeLine {
                 }
             }
 
+            // Track the maximum line height of the spans in the line, as
+            // well as whether any glyph uses the base line height (no span
+            // override), in which case the base line height also has to
+            // participate in determining the final line height: a span with
+            // a smaller line height must not reduce the height of a line
+            // that contains content at the base line height.
             let mut line_height_opt: Option<f32> = None;
+            let mut uses_base_line_height = false;
             for glyph in &glyphs {
                 if let Some(glyph_line_height) = glyph.line_height_opt {
                     line_height_opt = line_height_opt
                         .map_or(Some(glyph_line_height), |line_height| {
                             Some(line_height.max(glyph_line_height))
                         });
+                } else {
+                    uses_base_line_height = true;
                 }
             }
 
@@ -3456,6 +3465,7 @@ impl ShapeLine {
                 max_ascent,
                 max_descent,
                 line_height_opt,
+                uses_base_line_height,
                 glyphs,
                 decorations,
             });
@@ -3463,11 +3473,16 @@ impl ShapeLine {
 
         // This is used to create a visual line for empty lines (e.g. lines with only a <CR>)
         if layout_lines.is_empty() {
+            // An empty line has no base content of its own: its height is
+            // determined by the default attrs' line height (e.g. when the
+            // line is inside a span with its own metrics), falling back to
+            // the buffer's base line height.
             layout_lines.push(LayoutLine {
                 w: 0.0,
                 max_ascent: 0.0,
                 max_descent: 0.0,
                 line_height_opt: self.metrics_opt.map(|x| x.line_height),
+                uses_base_line_height: false,
                 glyphs: Vec::default(),
                 decorations: Vec::new(),
             });

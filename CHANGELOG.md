@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Cache monospace fallback candidates to speed up `Family::Monospace` shaping: https://github.com/pop-os/cosmic-text/issues/518
+- A span with a line height smaller than the buffer's base line height no longer reduces the height of a line that contains content at the base line height: the bigger height wins, and the span's line height only applies when the line's content fully overrides it (e.g. a line that is entirely within such a span, or an empty line inside it)
 
 ### Changed
 
 - Plug `SpanPadding` into shape/layout calculations: horizontal (`start`/`end`) padding is attributed to words, included in word widths (so wrapping and ellipsization account for it) and placed at the boundary's byte offset — inside a word it is emitted between the two adjacent glyph clusters at that offset (sub-word precision), and at a word's edges on the word's BiDi-aware x-stream edges; `top`/`bottom` padding inflates the line's `max_ascent`/`max_descent`
+- Add `LayoutLine::uses_base_line_height` and `LayoutLine::line_height(base)`, which computes the final line height: the max of the base line height and the spans' line heights when the line contains content at the base line height, or just the spans' line height when the line's content fully overrides it
 - `FontFallbackIter::new` now takes the `Attrs` the font match keys were computed with: https://github.com/pop-os/cosmic-text/issues/518
 
 ## [0.19.0] - 2026-04-22
