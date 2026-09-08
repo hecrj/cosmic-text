@@ -253,7 +253,7 @@ impl<'b> Iterator for LayoutRunIter<'b> {
             while let Some(layout_line) = layout.get(self.layout_i) {
                 self.layout_i += 1;
 
-                let line_height = layout_line.line_height_opt.unwrap_or(self.line_height);
+                let line_height = layout_line.line_height(self.line_height);
                 self.total_height += line_height;
 
                 let line_top = self.line_top - self.scroll;
@@ -491,14 +491,9 @@ impl Buffer {
                 .line_layout(font_system, layout_cursor.line)
                 .expect("shape_until_cursor failed to scroll forwards");
             (0..layout_cursor.layout).for_each(|layout_i| {
-                layout_y += layout[layout_i]
-                    .line_height_opt
-                    .unwrap_or(metrics.line_height);
+                layout_y += layout[layout_i].line_height(metrics.line_height);
             });
-            layout_y
-                + layout[layout_cursor.layout]
-                    .line_height_opt
-                    .unwrap_or(metrics.line_height)
+            layout_y + layout[layout_cursor.layout].line_height(metrics.line_height)
         };
 
         if self.scroll.line > layout_cursor.line
@@ -522,7 +517,7 @@ impl Buffer {
                         .line_layout(font_system, line_i)
                         .expect("shape_until_cursor failed to scroll forwards");
                     for layout_line in layout {
-                        total_height += layout_line.line_height_opt.unwrap_or(metrics.line_height);
+                        total_height += layout_line.line_height(metrics.line_height);
                     }
                     if total_height > height + self.scroll.vertical {
                         self.scroll.line = line_i;
@@ -601,8 +596,7 @@ impl Buffer {
                     if let Some(layout) = self.line_layout(font_system, line_i) {
                         let mut layout_height = 0.0;
                         for layout_line in layout {
-                            layout_height +=
-                                layout_line.line_height_opt.unwrap_or(metrics.line_height);
+                            layout_height += layout_line.line_height(metrics.line_height);
                         }
                         self.scroll.line = line_i;
                         self.scroll.vertical += layout_height;
@@ -640,7 +634,7 @@ impl Buffer {
                     .line_layout(font_system, line_i)
                     .expect("shape_until_scroll invalid line");
                 for layout_line in layout {
-                    let line_height = layout_line.line_height_opt.unwrap_or(metrics.line_height);
+                    let line_height = layout_line.line_height(metrics.line_height);
                     layout_height += line_height;
                     total_height += line_height;
                 }

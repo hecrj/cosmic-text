@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A span with a line height smaller than the buffer's base line height no longer reduces the height of a line that contains content at the base line height: the bigger height wins, and the span's line height only applies when the line's content fully overrides it (e.g. a line that is entirely within such a span, or an empty line inside it)
+
+### Changed
+
+- Add `LayoutLine::uses_base_line_height` and `LayoutLine::line_height(base)`, which computes the final line height: the max of the base line height and the spans' line heights when the line contains content at the base line height, or just the spans' line height when the line's content fully overrides it
 ## [0.19.0] - 2026-04-22
 
 ### Fixed

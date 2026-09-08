@@ -117,10 +117,38 @@ pub struct LayoutLine {
     pub max_descent: f32,
     /// Maximum line height of any spans in line
     pub line_height_opt: Option<f32>,
+    /// Whether the line contains any content laid out at the base line
+    /// height, i.e. any glyph whose span does not override the line height
+    /// in its `Attrs`
+    ///
+    /// When `true`, the base line height participates in determining the
+    /// final line height via [`Self::line_height`]. When `false`, the
+    /// line's content fully specifies its own line height (or the line is
+    /// empty), so [`Self::line_height_opt`] alone determines it.
+    pub uses_base_line_height: bool,
     /// Glyphs in line
     pub glyphs: Vec<LayoutGlyph>,
     /// Text decoration spans covering ranges of glyphs
     pub decorations: Vec<DecorationSpan>,
+}
+
+impl LayoutLine {
+    /// The line's height given the buffer's base `line_height`.
+    ///
+    /// Spans with a line height larger than the base one increase the line's
+    /// height. Spans with a smaller line height only reduce it when the
+    /// line's content fully overrides the line height (e.g. a line that is
+    /// entirely within such a span, or an empty line inside it); otherwise
+    /// the base line height wins and the span has no impact on the line's
+    /// height.
+    pub const fn line_height(&self, line_height: f32) -> f32 {
+        match (self.uses_base_line_height, self.line_height_opt) {
+            (true, Some(span_line_height)) if span_line_height > line_height => span_line_height,
+            (true, _) => line_height,
+            (false, Some(span_line_height)) => span_line_height,
+            (false, None) => line_height,
+        }
+    }
 }
 
 /// Wrapping mode
