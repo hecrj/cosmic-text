@@ -233,12 +233,26 @@ pub trait Edit<'buffer> {
                     }
                 },
                 Selection::Line(select) => {
+                    if cursor == select
+                        && (cursor.index == 0
+                            || cursor.index == buffer.lines[cursor.line].text().len())
+                    {
+                        return None;
+                    }
+
                     let start_line = cmp::min(select.line, cursor.line);
                     let end_line = cmp::max(select.line, cursor.line);
                     let end_index = buffer.lines[end_line].text().len();
                     Some((Cursor::new(start_line, 0), Cursor::new(end_line, end_index)))
                 }
                 Selection::Word(select) => {
+                    if cursor == select
+                        && (cursor.index == 0
+                            || cursor.index == buffer.lines[cursor.line].text().len())
+                    {
+                        return None;
+                    }
+
                     let (mut start, mut end) = match select.line.cmp(&cursor.line) {
                         cmp::Ordering::Greater => (cursor, select),
                         cmp::Ordering::Less => (select, cursor),
