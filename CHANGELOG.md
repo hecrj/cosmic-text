@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Update harfrust to 0.12
+- Update skrifa to 0.44 (same read-fonts version as harfrust)
 - Plug `SpanPadding` into shape/layout calculations: horizontal (`start`/`end`) padding is attributed to words, included in word widths (so wrapping and ellipsization account for it) and placed at the boundary's byte offset — inside a word it is emitted between the two adjacent glyph clusters at that offset (sub-word precision), and at a word's edges on the word's BiDi-aware x-stream edges
 - Add `LayoutLine::uses_base_line_height` and `LayoutLine::line_height(base)`, which computes the final line height: the max of the base line height and the spans' line heights when the line contains content at the base line height, or just the spans' line height when the line's content fully overrides it
 - `FontFallbackIter::new` now takes the `Attrs` the font match keys were computed with: https://github.com/pop-os/cosmic-text/issues/518
