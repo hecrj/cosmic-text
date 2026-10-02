@@ -1239,13 +1239,62 @@ impl Buffer {
                         new_cursor.affinity = new_cursor_affinity;
                     }
                     None => {
-                        // Click was past all glyphs in this visual run.
-                        // Use the maximum glyph.end across all glyphs.
-                        // this is the logical end of this visual line's byte coverage,
-                        // correct for LTR, RTL, mixed-BiDi, and wrapped paragraphs.
-                        let run_end = run.glyphs.iter().map(|g| g.end).max().unwrap_or(0);
-                        new_cursor.index = run_end;
-                        new_cursor.affinity = Affinity::Before;
+                        // The click was not within any glyph box. In one pass
+                        // over the run, compute its horizontal extent (used to
+                        // tell a click in a gap between glyphs, e.g. a span's
+                        // padding, apart from a click past the end of the run)
+                        // and the maximum glyph.end (the logical end of this
+                        // visual line's byte coverage, 0 for an empty run).
+                        let mut run_end = 0;
+                        let mut x_min = f32::INFINITY;
+                        let mut x_max = f32::NEG_INFINITY;
+                        for glyph in run.glyphs {
+                            run_end = run_end.max(glyph.end);
+                            x_min = x_min.min(glyph.x);
+                            x_max = x_max.max(glyph.x + glyph.w);
+                        }
+                        if x > x_min && x < x_max {
+                            // The click fell into a gap between glyphs (e.g.
+                            // the padding of a span): place the cursor at the
+                            // edge of the nearest glyph.
+                            let mut nearest: Option<(&LayoutGlyph, f32, bool)> = None;
+                            for glyph in run.glyphs {
+                                let (dist, right_edge) = if x < glyph.x {
+                                    (glyph.x - x, false)
+                                } else {
+                                    (x - (glyph.x + glyph.w), true)
+                                };
+                                if nearest
+                                    .as_ref()
+                                    .is_none_or(|(_, best_dist, _)| dist < *best_dist)
+                                {
+                                    nearest = Some((glyph, dist, right_edge));
+                                }
+                            }
+                            if let Some((glyph, _, right_edge)) = nearest {
+                                if right_edge == glyph.level.is_rtl() {
+                                    // The click is on the logical-start side
+                                    // of the cluster's box.
+                                    new_cursor.index = glyph.start;
+                                    new_cursor.affinity = Affinity::After;
+                                } else {
+                                    // The click is on the logical-end side of
+                                    // the cluster's box.
+                                    new_cursor.index = glyph.end;
+                                    new_cursor.affinity = Affinity::Before;
+                                }
+                            } else {
+                                new_cursor.index = run_end;
+                                new_cursor.affinity = Affinity::Before;
+                            }
+                        } else {
+                            // Click was past all glyphs in this visual run.
+                            // Use the maximum glyph.end across all glyphs.
+                            // this is the logical end of this visual line's byte coverage,
+                            // correct for LTR, RTL, mixed-BiDi, and wrapped paragraphs.
+                            new_cursor.index = run_end;
+                            new_cursor.affinity = Affinity::Before;
+                        }
                     }
                 }
 
